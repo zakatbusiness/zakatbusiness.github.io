@@ -220,6 +220,7 @@ if(!S.expenses)S.expenses=[];
 if(!S.inventories)S.inventories=[];
 if(!S.country)S.country='ML';
 if(!S.base)S.base='silver';
+if(!S.purchases)S.purchases=[];if(!S.outbox)S.outbox=[];if(!S.sb)S.sb={url:'',key:''};if(!S.shopId)S.shopId=uuid();
 function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}
 
 function ctry(){return COUNTRIES.filter(function(x){return x.c===S.country})[0]||COUNTRIES[0]}
@@ -248,7 +249,7 @@ var receivables=function(){return S.clients.reduce(function(a,c){return a+Math.m
 function isoToday(){var d=new Date();return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2)}
 function dateFr(iso){var d=new Date(iso+'T12:00:00');return isNaN(d)?'':d.toLocaleDateString('fr-FR',{day:'numeric',month:'long',year:'numeric'})}
 
-var tab='caisse',cart={},mode='cash',per='month';
+var tab='caisse',cart={},mode='cash',per='month',custName='';
 var ICONS={
   caisse:'<svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h2M12 11h2M16 11h0M8 15h2M12 15h2M16 15h0"/></svg>',
   produits:'<svg viewBox="0 0 24 24"><path d="M3 8l9-5 9 5-9 5-9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>',
@@ -296,15 +297,13 @@ function vCaisse(){
     }).join('')+'</div>';
     h+='<div class="total"><span>Total</span><span class="num">'+fmt(total)+'</span></div>';
     h+='<div class="seg" style="margin-bottom:10px"><button data-a="mode" data-m="cash" class="'+(mode==='cash'?'on':'')+'">Payé</button><button data-a="mode" data-m="credit" class="'+(mode==='credit'?'on':'')+'">À crédit</button></div>';
-    if(mode==='credit'){
-      h+='<div class="field"><label for="cname">Nom du client</label><input id="cname" list="clist" placeholder="Ex. Aminata Traoré" autocomplete="off"><datalist id="clist">'+S.clients.map(function(c){return '<option value="'+esc(c.name)+'">'}).join('')+'</datalist></div>';
-    }
+    h+='<div class="field"><label for="cname">Client'+(mode==='credit'?' (obligatoire)':' (facultatif)')+'</label><input id="cname" list="clist" placeholder="Ex. Aminata Traoré" autocomplete="off" value="'+esc(custName)+'"><datalist id="clist">'+S.clients.map(function(c){return '<option value="'+esc(c.name)+'">'}).join('')+'</datalist></div>';
     h+='<div class="row"><button class="btn block" data-a="validate" style="flex:1">Valider la vente</button><button class="btn ghost" data-a="clearcart">Vider</button></div>';
   }
   h+='</div>';
   h+='<div class="card"><h3>Ventes du jour</h3>'+(ts.length?ts.slice().reverse().slice(0,10).map(function(s){
     var d=new Date(s.t);var hh=('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2);
-    return '<div class="line"><div class="grow">'+esc(s.name)+' ×'+s.qty+'<small>'+hh+(s.mode==='credit'?' · crédit '+esc(s.client):' · payé')+'</small></div><div class="num">'+fmt(s.amount)+'</div></div>';
+    return '<div class="line"><div class="grow">'+esc(s.name)+' ×'+s.qty+'<small>'+hh+(s.mode==='credit'?' · crédit '+esc(s.client):' · payé'+(s.client?' · '+esc(s.client):''))+'</small></div><div class="num">'+fmt(s.amount)+'</div></div>';
   }).join(''):'<p class="muted">Aucune vente pour l\'instant.</p>')+'</div>';
   return h;
 }
@@ -325,7 +324,7 @@ function vProduits(){
     '<button class="btn block" data-a="addprod">Ajouter</button></div>';
   h+='<div class="card"><h3>Mes produits ('+S.products.length+')</h3>'+(S.products.length?S.products.map(function(p){
     var st=p.qty<=0?'<span class="pill low">épuisé</span>':(p.qty<=3?'<span class="pill low">bas</span>':'');
-    return '<div class="line" style="align-items:flex-start;flex-wrap:wrap"><div class="grow"><b>'+esc(p.name)+'</b> '+st+'<small>Valeur du stock : '+fmt(p.qty*(p.cost||p.price))+'</small></div>'+
+    return '<div class="line" style="align-items:flex-start;flex-wrap:wrap"><div class="grow"><b>'+esc(p.name)+'</b> '+st+'<small>Valeur du stock : '+fmt(p.qty*(p.cost||p.price))+(p.cost?' · Achat moyen (PMP) : '+fmt(p.cost):'')+'</small></div>'+
       '<button class="btn danger sm" data-a="delprod" data-id="'+p.id+'" aria-label="Supprimer '+esc(p.name)+'">Supprimer</button>'+
       '<div class="grid2" style="width:100%"><div><label for="pp-'+p.id+'">Prix ('+CL()+')</label><input id="pp-'+p.id+'" inputmode="decimal" data-pid="'+p.id+'" data-f="price" value="'+p.price+'"></div>'+
       '<div><label for="pq-'+p.id+'">Quantité</label><input id="pq-'+p.id+'" inputmode="numeric" data-pid="'+p.id+'" data-f="qty" value="'+p.qty+'"></div></div></div>';
@@ -340,6 +339,120 @@ function vProduits(){
   }else h+='<p class="muted">Ajoute des produits en stock pour générer ton catalogue.</p>';
   h+='</div>';
   return h;
+}
+
+/* ---------- PMP : prix moyen pondéré, livraisons, Supabase ---------- */
+function uuid(){try{if(window.crypto&&crypto.randomUUID)return crypto.randomUUID()}catch(e){}
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,function(c){var r=Math.random()*16|0,v=c==='x'?r:(r&3|8);return v.toString(16)})}
+var rsProd=null,rsOp=uuid(),busy=false,lastSubmit=0,syncing=false,sbErr='';
+function r4(n){return Math.round((Number(n)||0)*10000)/10000}
+/* Nouveau PMP = (valeur ancien stock + valeur livraison) / quantité totale */
+function calcPMP(oldQty,oldCost,addQty,unitPrice){
+  oldQty=Math.max(0,Number(oldQty)||0);oldCost=Number(oldCost)||0;
+  var known=oldQty===0||oldCost>0;
+  var baseCost=known?oldCost:unitPrice;
+  var oldValue=oldQty*baseCost,newValue=addQty*unitPrice,totalQty=oldQty+addQty;
+  var pmp=totalQty>0?(oldValue+newValue)/totalQty:unitPrice;
+  return {oldQty:oldQty,oldCost:baseCost,oldValue:oldValue,addQty:addQty,unitPrice:unitPrice,newValue:newValue,
+    totalQty:totalQty,pmp:r4(pmp),stockValue:r4(oldValue+newValue),estimated:!known};
+}
+function deliveryRow(r){
+  return {op_id:r.id,shop_id:S.shopId,received_at:new Date(r.t).toISOString(),product_id:r.pid,product_name:r.name,
+    qty:r.qty,unit_price:r.unit,total:r.total,old_qty:r.oldQty,old_pmp:r.oldCost,new_qty:r.newQty,new_pmp:r.newCost,
+    old_cost_estimated:!!r.estimated,currency:r.cur};
+}
+/* Enregistre une livraison. Idempotent : un même opId n'est jamais appliqué deux fois. Ne touche jamais p.price. */
+function receiveDelivery(pid,q,price,opId,when){
+  var p=S.products.filter(function(x){return x.id===pid})[0];
+  q=Math.floor(Number(q)||0);price=Number(price)||0;
+  if(!p||q<=0||price<=0)return null;
+  opId=opId||uuid();
+  if(S.purchases.some(function(x){return x.id===opId}))return null;
+  var r=calcPMP(p.qty,p.cost,q,price);
+  p.qty=r.totalQty;p.cost=r.pmp;
+  var rec={id:opId,t:when||Date.now(),pid:p.id,name:p.name,qty:q,unit:price,total:r4(q*price),oldQty:r.oldQty,oldCost:r4(r.oldCost),
+    newQty:r.totalQty,newCost:r.pmp,estimated:r.estimated,cur:curCode()};
+  S.purchases.push(rec);
+  S.outbox.push({table:'stock_deliveries',row:deliveryRow(rec)});
+  return {rec:rec,calc:r};
+}
+function restockPreview(pid,qs,ps){
+  var p=S.products.filter(function(x){return x.id===pid})[0],q=Math.floor(num(qs)),pr=num(ps);
+  if(!p)return '';
+  if(!q||!pr)return '<p class="muted small" style="margin:0">Écris la quantité et le prix pour voir le nouveau prix moyen.</p>';
+  var r=calcPMP(p.qty,p.cost,q,pr);
+  return '<div class="calc">'+
+    '<span>Ancien stock</span><span class="r">'+fmtNum(r.oldQty)+' × '+fmt(r.oldCost)+'</span>'+
+    '<span>+ Livraison</span><span class="r">'+fmtNum(q)+' × '+fmt(pr)+'</span>'+
+    '<div class="sep"></div><span>Nouveau stock</span><span class="r">'+fmtNum(r.totalQty)+'</span>'+
+    '<b>Nouveau PMP</b><b class="r" style="color:var(--ok)">'+fmt(r.pmp)+'</b>'+
+    '<span>Valeur du stock</span><span class="r">'+fmt(r.stockValue)+'</span>'+
+    '<span>Prix de vente (inchangé)</span><span class="r">'+fmt(p.price)+'</span></div>'+
+    (r.estimated?'<p class="muted small" style="margin:8px 0 0">Ancien prix d\'achat inconnu : on a supposé le même que cette livraison.</p>':'');
+}
+function updRestockPreview(){
+  var o=document.getElementById('rs-prev'),s=document.getElementById('rs-prod');if(!o||!s)return;
+  rsProd=s.value;
+  var q=document.getElementById('rs-qty'),c=document.getElementById('rs-cost');
+  o.innerHTML=restockPreview(s.value,q?q.value:'',c?c.value:'');
+}
+function sbConfigured(){return !!(S.sb&&S.sb.url&&S.sb.key)}
+function syncText(){
+  var n=S.outbox.length;
+  if(!sbConfigured())return n?n+' en attente (Supabase pas encore configuré)':'';
+  if(n)return n+' en attente d\'envoi'+(sbErr?' · '+sbErr:'');
+  return 'Tout est enregistré en ligne';
+}
+function setSyncStatus(){var o=document.getElementById('sb-status');if(o)o.textContent=syncText()||'Rien à envoyer'}
+function deliveriesCard(){
+  var list=S.purchases.slice().sort(function(a,b){return b.t-a.t});
+  var month=S.purchases.filter(function(x){return sameMonth(x.t)}).reduce(function(a,x){return a+x.total},0);
+  var h='<div class="card"><h3>Historique des livraisons</h3>';
+  if(!list.length)return h+'<p class="muted">Aucune livraison enregistrée.</p></div>';
+  h+='<p class="muted small" style="margin:0 0 8px">Acheté ce mois : <b>'+fmt(month)+'</b></p>';
+  h+=list.slice(0,8).map(function(x){
+    var d=new Date(x.t).toLocaleDateString('fr-FR',{day:'numeric',month:'short'});
+    return '<div class="line"><div class="grow"><b>'+esc(x.name)+'</b><small>'+d+' · +'+fmtNum(x.qty)+' à '+fmt(x.unit)+' · PMP '+fmtNum(x.oldCost)+' → '+fmt(x.newCost)+'</small></div><div class="num">'+fmt(x.total)+'</div></div>';
+  }).join('');
+  var st=syncText();
+  return h+(st?'<p class="muted small" id="hist-sync" style="margin:8px 0 0">'+esc(st)+'</p>':'')+'</div>';
+}
+function restockCard(){
+  if(!S.products.length)return '';
+  if(!S.products.some(function(p){return p.id===rsProd}))rsProd=S.products[0].id;
+  return '<div class="card"><h3>Nouvelle livraison</h3><p class="muted small" style="margin:0 0 8px">Marchandise reçue d\'un fournisseur. Le prix d\'achat moyen (PMP) est recalculé. Ton prix de vente ne change pas.</p>'+
+    '<div class="field"><label for="rs-prod">Produit</label><select id="rs-prod">'+S.products.map(function(p){return '<option value="'+p.id+'"'+(p.id===rsProd?' selected':'')+'>'+esc(p.name)+' ('+fmtNum(p.qty)+' en stock · achat moyen '+fmt(p.cost||0)+')</option>'}).join('')+'</select></div>'+
+    '<div class="grid2"><div class="field"><label for="rs-qty">Quantité reçue</label><input id="rs-qty" inputmode="numeric" placeholder="10"></div>'+
+    '<div class="field"><label for="rs-cost">Prix d\'achat unitaire ('+CL()+')</label><input id="rs-cost" inputmode="decimal" placeholder="20000"></div></div>'+
+    '<div id="rs-prev" style="margin-bottom:10px">'+restockPreview(rsProd,'','')+'</div>'+
+    '<button class="btn block" data-a="restock">Valider la livraison</button></div>';
+}
+function sbCard(){
+  var s=S.sb||{url:'',key:''};
+  return '<div class="card"><h3>Sauvegarde en ligne (Supabase)</h3><p class="muted small" style="margin:0 0 8px">Chaque livraison est aussi envoyée dans ta base Supabase. Sans internet, elle attend puis part toute seule, sans doublon.</p>'+
+    '<div class="field"><label for="sb-url">Project URL</label><input id="sb-url" inputmode="url" autocapitalize="off" placeholder="https://xxxx.supabase.co" value="'+esc(s.url)+'"></div>'+
+    '<div class="field"><label for="sb-key">Clé publique (anon / publishable)</label><input id="sb-key" autocapitalize="off" autocomplete="off" value="'+esc(s.key)+'"></div>'+
+    '<div class="row"><button class="btn" data-a="sbsave" style="flex:1">Enregistrer</button><button class="btn gold" data-a="sbsync" style="flex:1">Envoyer maintenant</button></div>'+
+    '<p class="muted small" id="sb-status" style="margin:8px 0 0">'+esc(syncText()||'Rien à envoyer')+'</p></div>';
+}
+function sbBase(){return String(S.sb.url||'').replace(/\/+$/,'')}
+/* Envoi un par un ; 409 = déjà enregistré (op_id identique) = succès ; sans doublon grâce à op_id */
+function syncOutbox(){
+  if(syncing||!sbConfigured()||!S.outbox.length||(typeof navigator!=='undefined'&&navigator.onLine===false)){setSyncStatus();return Promise.resolve()}
+  syncing=true;sbErr='';
+  var headers={'Content-Type':'application/json','apikey':S.sb.key,'Prefer':'return=minimal'};
+  if(/^eyJ/.test(S.sb.key))headers['Authorization']='Bearer '+S.sb.key;
+  function next(){
+    if(!S.outbox.length)return Promise.resolve();
+    var item=S.outbox[0],ctl=(typeof AbortController!=='undefined')?new AbortController():null,tm=ctl&&setTimeout(function(){ctl.abort()},15000);
+    return fetch(sbBase()+'/rest/v1/'+item.table,{method:'POST',headers:headers,body:JSON.stringify(item.row),signal:ctl?ctl.signal:undefined})
+      .then(function(res){
+        if(tm)clearTimeout(tm);
+        if(res.ok||res.status===409){S.outbox.shift();save();return next()}
+        sbErr='erreur '+res.status;
+      });
+  }
+  return next().catch(function(){sbErr='pas de connexion'}).then(function(){syncing=false;save();setSyncStatus();var h=document.getElementById('hist-sync');if(h)h.textContent=syncText()});
 }
 
 /* ---------- INVENTAIRE ---------- */
@@ -361,13 +474,8 @@ function vInventaire(){
     }).join('')+'<button class="btn block" style="margin-top:10px" data-a="applyinv">Valider l\'inventaire</button>';
   }else h+='<p class="muted">Ajoute d\'abord des produits dans l\'onglet Stock.</p>';
   h+='</div>';
-  if(S.products.length){
-    h+='<div class="card"><h3>Entrée de stock</h3><p class="muted small" style="margin:0 0 8px">Marchandise reçue d\'un fournisseur.</p>'+
-      '<div class="field"><label for="rs-prod">Produit</label><select id="rs-prod">'+S.products.map(function(p){return '<option value="'+p.id+'">'+esc(p.name)+'</option>'}).join('')+'</select></div>'+
-      '<div class="grid2"><div class="field"><label for="rs-qty">Quantité reçue</label><input id="rs-qty" inputmode="numeric" placeholder="10"></div>'+
-      '<div class="field"><label for="rs-cost">Nouveau prix d\'achat ('+CL()+')</label><input id="rs-cost" inputmode="decimal" placeholder="facultatif"></div></div>'+
-      '<button class="btn block" data-a="restock">Ajouter au stock</button></div>';
-  }
+  h+=restockCard();
+  h+=deliveriesCard();
   var inv=S.inventories.slice().reverse().slice(0,4);
   h+='<div class="card"><h3>Derniers inventaires</h3>'+(inv.length?inv.map(function(v){
     var d=new Date(v.t).toLocaleDateString('fr-FR',{day:'numeric',month:'long'});
@@ -458,6 +566,9 @@ function vCompta(){
     '<span>− Dépenses</span><span class="r">'+fmt(exT)+'</span>'+
     '<div class="sep"></div><b>Argent en plus</b><b class="r">'+fmt(treso)+'</b>'+
     '<span class="muted">Crédits clients encore à récupérer</span><span class="r muted">'+fmt(receivables())+'</span></div></div>';
+  var buys=S.purchases.filter(function(x){return inPer(x.t)}),buyT=buys.reduce(function(a,x){return a+x.total},0);
+  h+='<div class="card"><h3>Achats de marchandises</h3><div class="calc"><span>Livraisons reçues ('+buys.length+')</span><span class="r">'+fmt(buyT)+'</span></div>'+
+    '<p class="muted small" style="margin:8px 0 0">Information seulement : ces achats ne sont pas retirés du bénéfice, qui utilise déjà le prix d\'achat moyen des produits vendus.</p></div>';
   h+='<div class="card"><h3>Noter une dépense</h3>'+
     '<div class="grid2"><div class="field"><label for="ex-cat">Type</label><select id="ex-cat">'+CATS.map(function(c){return '<option>'+esc(c)+'</option>'}).join('')+'</select></div>'+
     '<div class="field"><label for="ex-date">Date</label><input id="ex-date" type="date" value="'+isoToday()+'"></div></div>'+
@@ -544,6 +655,7 @@ function vReglages(){
   COUNTRIES.map(function(x){return '<option value="'+x.c+'"'+(x.c===S.country?' selected':'')+'>'+esc(x.n)+' ('+CUR[x.cur].label+')</option>'}).join('')+'</select></div>'+
   '<p class="muted small" style="margin:0">Devise : '+CL()+' · indicatif WhatsApp : +'+c.dial+'. Changer de devise ne convertit pas les montants déjà saisis.</p></div>'+
   '<div class="card"><h3>Ma boutique</h3><div class="field" style="margin:0"><label for="shop2">Nom de la boutique</label><input id="shop2" value="'+esc(S.shop)+'"></div></div>'+
+  sbCard()+
   '<div class="card"><h3>Mes données</h3><p class="muted small" style="margin:0 0 10px">Les données sont gardées dans ce navigateur, sur cet appareil. Elles ne passent pas d\'un téléphone à un ordinateur.</p>'+
   '<button class="btn danger sm" data-a="wipe">Effacer toutes mes données</button></div>';
 }
@@ -573,15 +685,14 @@ var A={
     cart[p.id]=q;render();
   },
   dec:function(el){var id=el.dataset.id;cart[id]=(cart[id]||0)-1;if(cart[id]<=0)delete cart[id];render()},
-  clearcart:function(){cart={};render()},
+  clearcart:function(){cart={};custName='';render()},
   mode:function(el){mode=el.dataset.m;render()},
   per:function(el){per=el.dataset.p;render()},
   validate:function(){
     var ids=Object.keys(cart);if(!ids.length)return;
-    var cl=null;
-    if(mode==='credit'){
-      var nm=($('#cname')||{value:''}).value.trim();
-      if(!nm){toast('Écris le nom du client');return}
+    var cl=null,nm=($('#cname')||{value:''}).value.trim();
+    if(mode==='credit'&&!nm){toast('Écris le nom du client');return}
+    if(nm){
       cl=findClient(nm);
       if(!cl){cl={id:uid(),name:nm,phone:'',entries:[]};S.clients.push(cl)}
     }
@@ -593,8 +704,8 @@ var A={
       p.qty-=q;
       S.sales.push({id:uid(),t:now,pid:p.id,name:p.name,qty:q,amount:amt,cost:p.cost||0,mode:mode,client:cl?cl.name:''});
     });
-    if(cl&&total>0)cl.entries.push({t:now,type:'debt',amount:total,note:labels.join(', ')});
-    cart={};save();render();toast(mode==='credit'?'Crédit enregistré : '+fmt(total):'Vente enregistrée : '+fmt(total));
+    if(cl&&mode==='credit'&&total>0)cl.entries.push({t:now,type:'debt',amount:total,note:labels.join(', ')});
+    cart={};custName='';save();render();toast(mode==='credit'?'Crédit enregistré : '+fmt(total):'Vente enregistrée : '+fmt(total));
   },
   addprod:function(){
     var name=$('#np-name').value.trim(),price=num($('#np-price').value);
@@ -633,11 +744,31 @@ var A={
     save();render();toast('Inventaire validé · écart '+sgnm(total));
   },
   restock:function(){
-    var p=S.products.filter(function(x){return x.id===$('#rs-prod').value})[0];
-    var q=Math.floor(num($('#rs-qty').value));
-    if(!p||!q){toast('Écris la quantité reçue');return}
-    p.qty+=q;var c=num($('#rs-cost').value);if(c)p.cost=c;
-    save();render();toast('+'+q+' '+p.name);
+    var sel=$('#rs-prod');if(!sel)return;
+    var q=Math.floor(num($('#rs-qty').value)),pr=num($('#rs-cost').value);
+    if(!q){toast('Écris la quantité reçue');return}
+    if(!pr){toast('Écris le prix d\'achat unitaire');return}
+    var now=Date.now();
+    if(busy||now-lastSubmit<1200)return;
+    busy=true;lastSubmit=now;
+    try{
+      rsProd=sel.value;
+      var r=receiveDelivery(sel.value,q,pr,rsOp,now);
+      if(!r){toast('Livraison déjà enregistrée');return}
+      rsOp=uuid();
+      save();render();
+      toast('+'+q+' '+r.rec.name+' · PMP '+fmt(r.rec.newCost));
+      syncOutbox();
+    }finally{busy=false}
+  },
+  sbsave:function(){
+    var u=$('#sb-url').value.trim().replace(/\/+$/,''),k=$('#sb-key').value.trim();
+    if(u&&!/^https:\/\//.test(u)&&!/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(u)){toast('L\'adresse doit commencer par https://');return}
+    S.sb={url:u,key:k};save();toast(u&&k?'Supabase enregistré':'Supabase vide');setSyncStatus();syncOutbox();
+  },
+  sbsync:function(){
+    if(!sbConfigured()){toast('Remplis d\'abord l\'adresse et la clé');return}
+    sbErr='';syncOutbox().then(function(){toast(S.outbox.length?'Pas encore envoyé : '+(sbErr||'réessaie'):'Tout est envoyé')});
   },
   adddebt:function(){
     var nm=$('#nd-name').value.trim(),amt=num($('#nd-amount').value);
@@ -668,11 +799,11 @@ var A={
   },
   wipe:function(el){
     if(el.dataset.sure!=='1'){el.dataset.sure='1';el.textContent='Sûr ? Tout sera effacé';return}
-    var country=S.country;S={sample:false,shop:'Ma boutique',country:country,base:'silver',products:[],sales:[],clients:[],cash:0,debts:0,expenses:[],inventories:[]};
+    var country=S.country;S={sample:false,shop:'Ma boutique',country:country,base:'silver',products:[],sales:[],clients:[],cash:0,debts:0,expenses:[],inventories:[],purchases:[],outbox:[],sb:S.sb,shopId:S.shopId};
     ensureMetals();cart={};save();render();toast('Données effacées');
   },
   clearsample:function(){
-    S.sample=false;S.products=[];S.sales=[];S.clients=[];S.expenses=[];S.inventories=[];S.cash=0;S.debts=0;S.shop='Ma boutique';cart={};save();render();toast('Exemples effacés');
+    S.sample=false;S.products=[];S.sales=[];S.clients=[];S.expenses=[];S.inventories=[];S.purchases=[];S.outbox=[];S.cash=0;S.debts=0;S.shop='Ma boutique';cart={};save();render();toast('Exemples effacés');
   }
 };
 document.addEventListener('click',function(e){
@@ -687,6 +818,7 @@ document.addEventListener('change',function(e){
     else p.qty=Math.floor(num(t.value));
     save();render();toast('Mis à jour');
   }else if(t.id==='shop'||t.id==='shop2'){S.shop=t.value.trim()||'Ma boutique';save();render()}
+  else if(t.id==='rs-prod'){updRestockPreview()}
   else if(t.id==='country'){
     var old=curCode();S.country=t.value;
     if(curCode()!==old){var d=indic(curCode());S.gold=d.gold;S.silver=d.silver;S.metalAuto=true;toast('Devise : '+CL()+'. Les montants déjà saisis ne sont pas convertis.')}
@@ -695,6 +827,8 @@ document.addEventListener('change',function(e){
 });
 document.addEventListener('input',function(e){
   var id=e.target.id||'';
+  if(id==='cname'){custName=e.target.value;return}
+  if(id==='rs-qty'||id==='rs-cost'){updRestockPreview();return}
   if(id.indexOf('ic-')===0){
     var pid=id.slice(3),pr=S.products.filter(function(x){return x.id===pid})[0],out=document.getElementById('ie-'+pid),cc=parseCount(e.target.value);
     if(pr&&out){
@@ -714,6 +848,9 @@ document.addEventListener('input',function(e){
   }
 });
 render();
+window.addEventListener('online',syncOutbox);
+setInterval(syncOutbox,60000);setTimeout(syncOutbox,1500);
+window.ZB={calcPMP:calcPMP,receiveDelivery:receiveDelivery,syncOutbox:syncOutbox,version:2};
 })();
 </script>
 <script>
