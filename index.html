@@ -221,6 +221,8 @@ if(!S.inventories)S.inventories=[];
 if(!S.country)S.country='ML';
 if(!S.base)S.base='silver';
 if(!S.purchases)S.purchases=[];if(!S.outbox)S.outbox=[];if(!S.sb)S.sb={url:'',key:''};if(!S.shopId)S.shopId=uuid();
+if(!S.installAt)S.installAt=Date.now();if(!S.paidUntil)S.paidUntil=0;if(!S.usedCodes)S.usedCodes=[];
+try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}
 function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}
 
 function ctry(){return COUNTRIES.filter(function(x){return x.c===S.country})[0]||COUNTRIES[0]}
@@ -339,6 +341,46 @@ function vProduits(){
   }else h+='<p class="muted">Ajoute des produits en stock pour générer ton catalogue.</p>';
   h+='</div>';
   return h;
+}
+
+var LIC_SECRET='1987f3c171043b3094f5';
+var LIC_A='0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+function cyrb53(str,seed){seed=seed||0;var h1=0xdeadbeef^seed,h2=0x41c6ce57^seed;for(var i=0,ch;i<str.length;i++){ch=str.charCodeAt(i);h1=Math.imul(h1^ch,2654435761);h2=Math.imul(h2^ch,1597334677)}
+  h1=Math.imul(h1^(h1>>>16),2246822507)^Math.imul(h2^(h2>>>13),3266489909);h2=Math.imul(h2^(h2>>>16),2246822507)^Math.imul(h1^(h1>>>13),3266489909);return 4294967296*(2097151&h2)+(h1>>>0)}
+function b32(n,len){var s='';for(var i=0;i<len;i++){s=LIC_A.charAt(n%32)+s;n=Math.floor(n/32)}return s}
+function licNorm(s){return String(s||'').toUpperCase().replace(/O/g,'0').replace(/[IL]/g,'1').replace(/[^0-9A-Z]/g,'')}
+function licSum(id,p){return b32(cyrb53(LIC_SECRET+'|'+id+'|'+p)%1099511627776,8)}
+function licMake(id,months,day){var p=LIC_A.charAt(months)+b32(day,3);return p+licSum(id,p)}
+function licParse(id,raw){raw=licNorm(raw);if(raw.length!==12)return null;var m=LIC_A.indexOf(raw.charAt(0));if(m<1||m>12)return null;if(licSum(id,raw.slice(0,4))!==raw.slice(4))return null;return {months:m,code:raw}}
+function licFmt(c){return c.replace(/(.{4})(?=.)/g,'$1-')}
+/* ---------- ABONNEMENT : essai gratuit + code d'activation ---------- */
+var TRIAL_DAYS=14,PRICE_GROS='25 000 FCFA',PRICE_PETIT='2 500 FCFA',DAY=864e5;
+function licId(){return String(S.shopId||'').replace(/-/g,'').slice(0,8).toUpperCase()}
+function licIdShow(){var i=licId();return i.slice(0,4)+'-'+i.slice(4)}
+function licInfo(){
+  var now=Math.max(Date.now(),S.lastSeen||0);S.lastSeen=now;
+  var trialEnd=(S.installAt||now)+TRIAL_DAYS*DAY,paid=S.paidUntil||0,end=Math.max(trialEnd,paid);
+  return {now:now,end:end,active:now<end,paid:paid>now,days:Math.max(0,Math.ceil((end-now)/DAY))};
+}
+function locked(){return !licInfo().active}
+function licBanner(){
+  var i=licInfo();
+  if(!i.active)return '<div class="banner full"><span>Essai terminé. Paie ton abonnement pour continuer à vendre. Tes données sont gardées.</span><button class="btn gold sm" data-a="tab" data-t="pay">Payer</button></div>';
+  if(i.days<=3)return '<div class="banner full"><span>'+(i.paid?'Ton abonnement se termine':'Ton essai se termine')+' dans '+i.days+' jour'+(i.days>1?'s':'')+'.</span><button class="btn gold sm" data-a="tab" data-t="pay">Payer</button></div>';
+  return '';
+}
+function licCard(){
+  var i=licInfo(),d=new Date(i.end).toLocaleDateString('fr-FR',{day:'numeric',month:'long',year:'numeric'});
+  var st=!i.active?'<b style="color:var(--danger)">Essai terminé</b>':(i.paid?'<b style="color:var(--ok)">Abonné jusqu\'au '+d+'</b>':'<b>Essai gratuit : '+i.days+' jour'+(i.days>1?'s':'')+' restant'+(i.days>1?'s':'')+'</b>');
+  return '<div class="card"><h3>Mon abonnement</h3><p style="margin:0 0 6px">'+st+'</p>'+
+    '<div class="calc" style="margin:4px 0 8px"><span><b>Grossiste</b> (gros stock)</span><span class="r"><b>'+PRICE_GROS+' / mois</b></span>'+
+    '<span><b>Petit commerce</b></span><span class="r"><b>'+PRICE_PETIT+' / mois</b></span></div>'+
+    '<p class="muted small" style="margin:0 0 6px">12 mois payés = 2 mois offerts. Prix en FCFA, ou l\'équivalent dans ta monnaie.</p>'+
+    '<p class="muted small" style="margin:0">Ton ID boutique : <b>'+licIdShow()+'</b> (donne-le quand tu paies)</p></div>';
+}
+function licActivateCard(){
+  return '<div class="card"><h3>J\'ai reçu mon code</h3><div class="field"><label for="lic-code">Code d\'activation</label><input id="lic-code" autocapitalize="characters" autocomplete="off" placeholder="XXXX-XXXX-XXXX"></div>'+
+    '<button class="btn block" data-a="activate">Activer mon abonnement</button></div>';
 }
 
 /* ---------- PMP : prix moyen pondéré, livraisons, Supabase ---------- */
@@ -634,6 +676,7 @@ function vZakat(){
 function vPay(){
   var shown=OWNER_TEL.replace(/(\d{2})(?=\d)/g,'$1 ');
   return '<div class="full"><h2>Payer mon abonnement</h2><p class="muted small" style="margin:0">Paie par Orange Money ou Wave, puis envoie la preuve par WhatsApp.</p></div>'+
+  licCard()+
   '<div class="card"><h3>Mode de paiement</h3>'+
   '<div class="pay-grid"><div class="pm"><span class="dot o"></span>Orange Money</div><div class="pm"><span class="dot w"></span>Wave</div></div>'+
   '<div class="muted small">Envoie le montant au numéro</div>'+
@@ -644,7 +687,7 @@ function vPay(){
   '<div class="grid2"><div class="field"><label for="py-m">Payé avec</label><select id="py-m"><option>Orange Money</option><option>Wave</option></select></div>'+
   '<div class="field"><label for="py-a">Montant payé ('+CL()+')</label><input id="py-a" inputmode="decimal" placeholder="Ex. 3000"></div></div>'+
   '<button class="btn gold block" data-a="sendproof">Envoyer la preuve sur WhatsApp</button>'+
-  '<p class="muted small" style="margin:10px 0 0">Le paiement est manuel : ton abonnement est confirmé quand le message est reçu. Si Orange Money ou Wave ne marche pas depuis ton pays, écris-nous quand même sur WhatsApp.</p></div>';
+  '<p class="muted small" style="margin:10px 0 0">Le paiement est manuel : ton abonnement est confirmé quand le message est reçu. Si Orange Money ou Wave ne marche pas depuis ton pays, écris-nous quand même sur WhatsApp.</p></div>'+licActivateCard();
 }
 
 /* ---------- RÉGLAGES ---------- */
@@ -662,7 +705,7 @@ function vReglages(){
 
 var VIEWS={caisse:vCaisse,produits:vProduits,inventaire:vInventaire,credits:vCredits,compta:vCompta,zakat:vZakat,pay:vPay,reglages:vReglages};
 function render(){
-  $('#view').innerHTML=VIEWS[tab]();
+  $('#view').innerHTML=(tab==='pay'||tab==='reglages'?'':licBanner())+VIEWS[tab]();
   $('#tabs').innerHTML=Object.keys(NAMES).map(function(k){
     return '<button class="tab'+(k===tab?' on':'')+'" data-a="tab" data-t="'+k+'"'+(k===tab?' aria-current="page"':'')+'>'+ICONS[k]+NAMES[k]+'</button>';
   }).join('');
@@ -761,6 +804,14 @@ var A={
       syncOutbox();
     }finally{busy=false}
   },
+  activate:function(){
+    var r=licParse(licId(),($('#lic-code')||{value:''}).value);
+    if(!r){toast('Code invalide. Vérifie les lettres et ton ID boutique');return}
+    if(S.usedCodes.indexOf(r.code)>=0){toast('Ce code a déjà été utilisé');return}
+    var base=Math.max(licInfo().end,Date.now());
+    S.paidUntil=base+r.months*30*DAY;S.usedCodes.push(r.code);save();render();
+    toast('Abonnement activé : '+r.months+' mois');
+  },
   sbsave:function(){
     var u=$('#sb-url').value.trim().replace(/\/+$/,''),k=$('#sb-key').value.trim();
     if(u&&!/^https:\/\//.test(u)&&!/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(u)){toast('L\'adresse doit commencer par https://');return}
@@ -793,13 +844,13 @@ var A={
   sendproof:function(){
     var amt=num($('#py-a').value);
     if(!amt){toast('Écris le montant payé');return}
-    var msg='Bonjour, j\'ai payé mon abonnement ZakatBusiness. Boutique : '+S.shop+'. Pays : '+ctry().n+'. Payé avec '+$('#py-m').value+'. Montant : '+fmt(amt)+'.';
+    var msg='Bonjour, j\'ai payé mon abonnement ZakatBusiness. Boutique : '+S.shop+'. Pays : '+ctry().n+'. ID boutique : '+licIdShow()+'. Payé avec '+$('#py-m').value+'. Montant : '+fmt(amt)+'.';
     window.open('https://wa.me/'+OWNER_DIAL+OWNER_TEL+'?text='+encodeURIComponent(msg),'_blank','noopener');
     toast('WhatsApp s\'ouvre. Si rien ne s\'ouvre, écris au '+OWNER_TEL);
   },
   wipe:function(el){
     if(el.dataset.sure!=='1'){el.dataset.sure='1';el.textContent='Sûr ? Tout sera effacé';return}
-    var country=S.country;S={sample:false,shop:'Ma boutique',country:country,base:'silver',products:[],sales:[],clients:[],cash:0,debts:0,expenses:[],inventories:[],purchases:[],outbox:[],sb:S.sb,shopId:S.shopId};
+    var country=S.country;S={sample:false,shop:'Ma boutique',country:country,base:'silver',products:[],sales:[],clients:[],cash:0,debts:0,expenses:[],inventories:[],purchases:[],outbox:[],sb:S.sb,shopId:S.shopId,installAt:S.installAt,paidUntil:S.paidUntil,usedCodes:S.usedCodes,lastSeen:S.lastSeen};
     ensureMetals();cart={};save();render();toast('Données effacées');
   },
   clearsample:function(){
@@ -808,11 +859,14 @@ var A={
 };
 document.addEventListener('click',function(e){
   var el=e.target.closest('[data-a]');if(!el||!A[el.dataset.a])return;
+  var LK={validate:1,add:1,dec:1,addprod:1,delprod:1,restock:1,applyinv:1,adddebt:1,pay:1,addexp:1,delexp:1,clearsample:1,clearcart:1,mode:1};
+  if(LK[el.dataset.a]&&locked()){toast('Essai terminé : paie pour continuer');tab='pay';render();return}
   A[el.dataset.a](el);
 });
 document.addEventListener('change',function(e){
   var t=e.target;
   if(t.dataset&&t.dataset.pid){
+    if(locked()){toast('Essai terminé : paie pour continuer');render();return}
     var p=S.products.filter(function(x){return x.id===t.dataset.pid})[0];if(!p)return;
     if(t.dataset.f==='price'){var v=num(t.value);if(v)p.price=v}
     else p.qty=Math.floor(num(t.value));
@@ -838,6 +892,7 @@ document.addEventListener('input',function(e){
     return;
   }
   if(id==='z-cash'||id==='z-debts'){
+    if(locked()){toast('Essai terminé : paie pour continuer');return}
     S[id==='z-cash'?'cash':'debts']=num(e.target.value);
     save();$('#z-out').innerHTML=zOut();return;
   }
@@ -850,7 +905,7 @@ document.addEventListener('input',function(e){
 render();
 window.addEventListener('online',syncOutbox);
 setInterval(syncOutbox,60000);setTimeout(syncOutbox,1500);
-window.ZB={calcPMP:calcPMP,receiveDelivery:receiveDelivery,syncOutbox:syncOutbox,version:2};
+window.ZB={licInfo:licInfo,calcPMP:calcPMP,receiveDelivery:receiveDelivery,syncOutbox:syncOutbox,version:2};
 })();
 </script>
 <script>
