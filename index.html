@@ -305,7 +305,7 @@ function vCaisse(){
   h+='</div>';
   h+='<div class="card"><h3>Ventes du jour</h3>'+(ts.length?ts.slice().reverse().slice(0,10).map(function(s){
     var d=new Date(s.t);var hh=('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2);
-    return '<div class="line"><div class="grow">'+esc(s.name)+' ×'+s.qty+'<small>'+hh+(s.mode==='credit'?' · crédit '+esc(s.client):' · payé'+(s.client?' · '+esc(s.client):''))+'</small></div><div class="num">'+fmt(s.amount)+'</div></div>';
+    return '<div class="line"><div class="grow">'+esc(s.name)+' ×'+s.qty+'<small>'+hh+(s.mode==='credit'?' · crédit '+esc(s.client):' · payé'+(s.client?' · '+esc(s.client):''))+'</small></div><div class="num">'+fmt(s.amount)+'</div><button class="btn danger sm" data-a="cancelsale" data-id="'+s.id+'" aria-label="Annuler cette vente">Annuler</button></div>';
   }).join(''):'<p class="muted">Aucune vente pour l\'instant.</p>')+'</div>';
   return h;
 }
@@ -353,6 +353,42 @@ function licSum(id,p){return b32(cyrb53(LIC_SECRET+'|'+id+'|'+p)%1099511627776,8
 function licMake(id,months,day){var p=LIC_A.charAt(months)+b32(day,3);return p+licSum(id,p)}
 function licParse(id,raw){raw=licNorm(raw);if(raw.length!==12)return null;var m=LIC_A.indexOf(raw.charAt(0));if(m<1||m>12)return null;if(licSum(id,raw.slice(0,4))!==raw.slice(4))return null;return {months:m,code:raw}}
 function licFmt(c){return c.replace(/(.{4})(?=.)/g,'$1-')}
+
+/* ---------- SAUVEGARDE / RESTAURATION + ANNULATIONS ---------- */
+var pendingRestore=null;
+var KEEP_KEYS=['shopId','installAt','paidUntil','usedCodes','lastSeen','outbox','sb','lastBackup'];
+function backupData(){var o={};Object.keys(S).forEach(function(k){if(KEEP_KEYS.indexOf(k)<0)o[k]=S[k]});o._zb=1;o._at=Date.now();return o}
+function validBackup(d){
+  if(!d||d._zb!==1||!Array.isArray(d.products)||!Array.isArray(d.sales)||!Array.isArray(d.clients))return false;
+  return d.products.every(function(p){return p&&typeof p.id==='string'&&typeof p.name==='string'&&isFinite(p.qty)&&isFinite(p.price)});
+}
+function backupAgeText(){
+  if(!S.lastBackup)return 'Tu n\'as encore jamais sauvegardé tes données.';
+  var d=Math.floor((Date.now()-S.lastBackup)/DAY);
+  return 'Dernière sauvegarde : '+(d<=0?'aujourd\'hui':'il y a '+d+' jour'+(d>1?'s':''))+'.';
+}
+function backupBanner(){
+  if(S.sample||S.sales.length<5)return '';
+  if(S.lastBackup&&Date.now()-S.lastBackup<7*DAY)return '';
+  return '<div class="banner full"><span>Pense à sauvegarder tes données pour ne rien perdre.</span><button class="btn gold sm" data-a="tab" data-t="reglages">Sauvegarder</button></div>';
+}
+function backupCard(){
+  var h='<div class="card"><h3>Sauvegarde</h3><p class="muted small" style="margin:0 0 8px">'+esc(backupAgeText())+' Le fichier contient tes produits, ventes, clients, dépenses et inventaires. Garde-le dans WhatsApp, Drive ou ton ordinateur.</p>'+
+    '<div class="row"><button class="btn" data-a="backup" style="flex:1">Sauvegarder mes données</button>'+
+    '<label class="btn ghost" for="restore-file" style="flex:1;text-align:center;cursor:pointer">Restaurer</label></div>'+
+    '<input type="file" id="restore-file" accept=".json,application/json" style="display:none">';
+  if(pendingRestore){
+    var d=pendingRestore;
+    h+='<div class="banner" style="margin-top:10px"><span>Restaurer '+d.products.length+' produit(s), '+d.sales.length+' vente(s), '+d.clients.length+' client(s) ? Cela remplace tes données actuelles.</span></div>'+
+      '<div class="row" style="margin-top:8px"><button class="btn danger" data-a="restoreok" style="flex:1">Oui, remplacer</button><button class="btn ghost" data-a="restoreno" style="flex:1">Annuler</button></div>';
+  }
+  return h+'<p class="muted small" style="margin:8px 0 0">Ton abonnement reste lié à cet appareil : une sauvegarde ne le transfère pas.</p></div>';
+}
+function sureTap(el,label){
+  if(el.dataset.sure!=='1'){el.dataset.sure='1';el.textContent=label||'Sûr ?';clearTimeout(sureTap.h);sureTap.h=setTimeout(function(){delete el.dataset.sure;el.textContent='Annuler'},3000);return false}
+  return true;
+}
+
 /* ---------- ABONNEMENT : essai gratuit + code d'activation ---------- */
 var TRIAL_DAYS=14,PRICE_GROS='25 000 FCFA',PRICE_PETIT='2 500 FCFA',DAY=864e5;
 function licId(){return String(S.shopId||'').replace(/-/g,'').slice(0,8).toUpperCase()}
@@ -448,13 +484,16 @@ function syncText(){
 function setSyncStatus(){var o=document.getElementById('sb-status');if(o)o.textContent=syncText()||'Rien à envoyer'}
 function deliveriesCard(){
   var list=S.purchases.slice().sort(function(a,b){return b.t-a.t});
-  var month=S.purchases.filter(function(x){return sameMonth(x.t)}).reduce(function(a,x){return a+x.total},0);
+  var month=S.purchases.filter(function(x){return !x.cancelled&&sameMonth(x.t)}).reduce(function(a,x){return a+x.total},0);
+  var latest={};S.purchases.forEach(function(x){if(!x.cancelled&&(!latest[x.pid]||x.t>=latest[x.pid].t))latest[x.pid]=x});
   var h='<div class="card"><h3>Historique des livraisons</h3>';
   if(!list.length)return h+'<p class="muted">Aucune livraison enregistrée.</p></div>';
   h+='<p class="muted small" style="margin:0 0 8px">Acheté ce mois : <b>'+fmt(month)+'</b></p>';
   h+=list.slice(0,8).map(function(x){
     var d=new Date(x.t).toLocaleDateString('fr-FR',{day:'numeric',month:'short'});
-    return '<div class="line"><div class="grow"><b>'+esc(x.name)+'</b><small>'+d+' · +'+fmtNum(x.qty)+' à '+fmt(x.unit)+' · PMP '+fmtNum(x.oldCost)+' → '+fmt(x.newCost)+'</small></div><div class="num">'+fmt(x.total)+'</div></div>';
+    if(x.cancelled)return '<div class="line" style="opacity:.55"><div class="grow"><b>'+esc(x.name)+'</b> <span class="pill low">annulée</span><small>'+d+' · +'+fmtNum(x.qty)+' à '+fmt(x.unit)+'</small></div></div>';
+    return '<div class="line"><div class="grow"><b>'+esc(x.name)+'</b><small>'+d+' · +'+fmtNum(x.qty)+' à '+fmt(x.unit)+' · PMP '+fmtNum(x.oldCost)+' → '+fmt(x.newCost)+'</small></div><div class="num">'+fmt(x.total)+'</div>'+
+      (latest[x.pid]===x?'<button class="btn danger sm" data-a="cancelbuy" data-id="'+x.id+'" aria-label="Annuler cette livraison">Annuler</button>':'')+'</div>';
   }).join('');
   var st=syncText();
   return h+(st?'<p class="muted small" id="hist-sync" style="margin:8px 0 0">'+esc(st)+'</p>':'')+'</div>';
@@ -608,7 +647,7 @@ function vCompta(){
     '<span>− Dépenses</span><span class="r">'+fmt(exT)+'</span>'+
     '<div class="sep"></div><b>Argent en plus</b><b class="r">'+fmt(treso)+'</b>'+
     '<span class="muted">Crédits clients encore à récupérer</span><span class="r muted">'+fmt(receivables())+'</span></div></div>';
-  var buys=S.purchases.filter(function(x){return inPer(x.t)}),buyT=buys.reduce(function(a,x){return a+x.total},0);
+  var buys=S.purchases.filter(function(x){return !x.cancelled&&inPer(x.t)}),buyT=buys.reduce(function(a,x){return a+x.total},0);
   h+='<div class="card"><h3>Achats de marchandises</h3><div class="calc"><span>Livraisons reçues ('+buys.length+')</span><span class="r">'+fmt(buyT)+'</span></div>'+
     '<p class="muted small" style="margin:8px 0 0">Information seulement : ces achats ne sont pas retirés du bénéfice, qui utilise déjà le prix d\'achat moyen des produits vendus.</p></div>';
   h+='<div class="card"><h3>Noter une dépense</h3>'+
@@ -699,13 +738,14 @@ function vReglages(){
   '<p class="muted small" style="margin:0">Devise : '+CL()+' · indicatif WhatsApp : +'+c.dial+'. Changer de devise ne convertit pas les montants déjà saisis.</p></div>'+
   '<div class="card"><h3>Ma boutique</h3><div class="field" style="margin:0"><label for="shop2">Nom de la boutique</label><input id="shop2" value="'+esc(S.shop)+'"></div></div>'+
   sbCard()+
-  '<div class="card"><h3>Mes données</h3><p class="muted small" style="margin:0 0 10px">Les données sont gardées dans ce navigateur, sur cet appareil. Elles ne passent pas d\'un téléphone à un ordinateur.</p>'+
+  backupCard()+
+  '<div class="card"><h3>Mes données</h3><p class="muted small" style="margin:0 0 10px">Les données sont gardées dans ce navigateur, sur cet appareil. Pour les garder en sécurité ou changer de téléphone, utilise la sauvegarde ci-dessus.</p>'+
   '<button class="btn danger sm" data-a="wipe">Effacer toutes mes données</button></div>';
 }
 
 var VIEWS={caisse:vCaisse,produits:vProduits,inventaire:vInventaire,credits:vCredits,compta:vCompta,zakat:vZakat,pay:vPay,reglages:vReglages};
 function render(){
-  $('#view').innerHTML=(tab==='pay'||tab==='reglages'?'':licBanner())+VIEWS[tab]();
+  $('#view').innerHTML=(tab==='pay'||tab==='reglages'?'':licBanner())+(tab==='caisse'?backupBanner():'')+VIEWS[tab]();
   $('#tabs').innerHTML=Object.keys(NAMES).map(function(k){
     return '<button class="tab'+(k===tab?' on':'')+'" data-a="tab" data-t="'+k+'"'+(k===tab?' aria-current="page"':'')+'>'+ICONS[k]+NAMES[k]+'</button>';
   }).join('');
@@ -804,6 +844,48 @@ var A={
       syncOutbox();
     }finally{busy=false}
   },
+  backup:function(){
+    var blob=new Blob([JSON.stringify(backupData())],{type:'application/json'}),a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);a.download='zakatbusiness-sauvegarde-'+isoToday()+'.json';
+    document.body.appendChild(a);a.click();
+    setTimeout(function(){URL.revokeObjectURL(a.href);a.remove()},1500);
+    S.lastBackup=Date.now();save();render();toast('Sauvegarde téléchargée');
+  },
+  restoreno:function(){pendingRestore=null;render()},
+  restoreok:function(){
+    var d=pendingRestore;if(!validBackup(d)){pendingRestore=null;render();toast('Fichier invalide');return}
+    var keep={};KEEP_KEYS.forEach(function(k){keep[k]=S[k]});
+    var n=Object.assign({},d,keep);delete n._zb;delete n._at;
+    ['expenses','inventories','purchases','outbox','usedCodes'].forEach(function(k){if(!Array.isArray(n[k]))n[k]=[]});
+    S=n;S.lastBackup=Date.now();pendingRestore=null;ensureMetals();cart={};custName='';save();render();toast('Données restaurées');
+  },
+  cancelsale:function(el){
+    if(!sureTap(el,'Sûr ?'))return;
+    var i=-1;S.sales.forEach(function(x,k){if(x.id===el.dataset.id)i=k});if(i<0)return;
+    var sl=S.sales[i],p=S.products.filter(function(x){return x.id===sl.pid})[0];
+    if(p)p.qty+=sl.qty;
+    if(sl.mode==='credit'&&sl.client){
+      var c=findClient(sl.client);
+      if(c){var e=c.entries.filter(function(x){return x.type==='debt'&&x.t===sl.t})[0];
+        if(e){e.amount-=sl.amount;if(e.amount<=0.0001)c.entries.splice(c.entries.indexOf(e),1)}}
+    }
+    S.sales.splice(i,1);save();render();toast('Vente annulée · stock remis');
+  },
+  cancelbuy:function(el){
+    var rec=S.purchases.filter(function(x){return x.id===el.dataset.id})[0];if(!rec||rec.cancelled)return;
+    var p=S.products.filter(function(x){return x.id===rec.pid})[0];
+    var later=S.purchases.some(function(x){return !x.cancelled&&x.pid===rec.pid&&x.t>rec.t});
+    if(later){toast('Annule d\'abord la livraison plus récente de ce produit');return}
+    if(!p){toast('Produit introuvable');return}
+    if(p.qty<rec.qty){toast('Une partie est déjà vendue. Corrige la quantité dans Stock');return}
+    if(!sureTap(el,'Sûr ?'))return;
+    p.qty-=rec.qty;p.cost=rec.estimated?0:rec.oldCost;
+    rec.cancelled=true;rec.cancelledAt=Date.now();
+    var oi=-1;S.outbox.forEach(function(o,k){if(o.table==='stock_deliveries'&&o.row.op_id===rec.id)oi=k});
+    if(oi>=0)S.outbox.splice(oi,1);
+    else S.outbox.push({table:'stock_delivery_cancellations',row:{op_id:uuid(),delivery_op_id:rec.id,shop_id:S.shopId,cancelled_at:new Date().toISOString()}});
+    save();render();toast('Livraison annulée · stock et PMP remis');syncOutbox();
+  },
   activate:function(){
     var r=licParse(licId(),($('#lic-code')||{value:''}).value);
     if(!r){toast('Code invalide. Vérifie les lettres et ton ID boutique');return}
@@ -850,7 +932,7 @@ var A={
   },
   wipe:function(el){
     if(el.dataset.sure!=='1'){el.dataset.sure='1';el.textContent='Sûr ? Tout sera effacé';return}
-    var country=S.country;S={sample:false,shop:'Ma boutique',country:country,base:'silver',products:[],sales:[],clients:[],cash:0,debts:0,expenses:[],inventories:[],purchases:[],outbox:[],sb:S.sb,shopId:S.shopId,installAt:S.installAt,paidUntil:S.paidUntil,usedCodes:S.usedCodes,lastSeen:S.lastSeen};
+    var country=S.country;S={sample:false,shop:'Ma boutique',country:country,base:'silver',products:[],sales:[],clients:[],cash:0,debts:0,expenses:[],inventories:[],purchases:[],outbox:[],sb:S.sb,shopId:S.shopId,installAt:S.installAt,paidUntil:S.paidUntil,usedCodes:S.usedCodes,lastSeen:S.lastSeen,lastBackup:S.lastBackup};
     ensureMetals();cart={};save();render();toast('Données effacées');
   },
   clearsample:function(){
@@ -859,7 +941,7 @@ var A={
 };
 document.addEventListener('click',function(e){
   var el=e.target.closest('[data-a]');if(!el||!A[el.dataset.a])return;
-  var LK={validate:1,add:1,dec:1,addprod:1,delprod:1,restock:1,applyinv:1,adddebt:1,pay:1,addexp:1,delexp:1,clearsample:1,clearcart:1,mode:1};
+  var LK={cancelsale:1,cancelbuy:1,restoreok:1,validate:1,add:1,dec:1,addprod:1,delprod:1,restock:1,applyinv:1,adddebt:1,pay:1,addexp:1,delexp:1,clearsample:1,clearcart:1,mode:1};
   if(LK[el.dataset.a]&&locked()){toast('Essai terminé : paie pour continuer');tab='pay';render();return}
   A[el.dataset.a](el);
 });
@@ -872,6 +954,12 @@ document.addEventListener('change',function(e){
     else p.qty=Math.floor(num(t.value));
     save();render();toast('Mis à jour');
   }else if(t.id==='shop'||t.id==='shop2'){S.shop=t.value.trim()||'Ma boutique';save();render()}
+  else if(t.id==='restore-file'){
+    var f=t.files&&t.files[0];if(!f)return;
+    var fr=new FileReader();
+    fr.onload=function(){try{var d=JSON.parse(fr.result);if(!validBackup(d)){toast('Ce fichier n\'est pas une sauvegarde ZakatBusiness');return}pendingRestore=d;render()}catch(err){toast('Fichier illisible')}};
+    fr.onerror=function(){toast('Fichier illisible')};fr.readAsText(f);
+  }
   else if(t.id==='rs-prod'){updRestockPreview()}
   else if(t.id==='country'){
     var old=curCode();S.country=t.value;
