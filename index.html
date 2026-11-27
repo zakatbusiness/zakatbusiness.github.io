@@ -426,7 +426,7 @@ function backupCard(){
   return h+'<p class="muted small" style="margin:8px 0 0">Ton abonnement reste lié à cet appareil : une sauvegarde ne le transfère pas.</p></div>';
 }
 function sureTap(el,label){
-  if(el.dataset.sure!=='1'){el.dataset.sure='1';el.textContent=label||'Sûr ?';clearTimeout(sureTap.h);sureTap.h=setTimeout(function(){delete el.dataset.sure;el.textContent='Annuler'},3000);return false}
+  if(el.dataset.sure!=='1'){el.dataset.sure='1';el.dataset.orig=el.textContent;el.textContent=label||'Sûr ?';clearTimeout(sureTap.h);sureTap.h=setTimeout(function(){delete el.dataset.sure;el.textContent=el.dataset.orig||'Annuler'},3000);return false}
   return true;
 }
 
@@ -532,7 +532,7 @@ function deliveriesCard(){
   h+='<p class="muted small" style="margin:0 0 8px">Acheté ce mois : <b>'+fmt(month)+'</b></p>';
   h+=list.slice(0,8).map(function(x){
     var d=new Date(x.t).toLocaleDateString('fr-FR',{day:'numeric',month:'short'});
-    if(x.cancelled)return '<div class="line" style="opacity:.55"><div class="grow"><b>'+esc(x.name)+'</b> <span class="pill low">annulée</span><small>'+d+' · +'+fmtQty(x.qty)+' à '+fmt(x.unit)+'</small></div></div>';
+    if(x.cancelled)return '<div class="line" style="opacity:.55"><div class="grow"><b>'+esc(x.name)+'</b> <span class="pill low">annulée</span><small>'+d+' · +'+fmtQty(x.qty)+' à '+fmt(x.unit)+'</small></div><button class="btn danger sm" data-a="delbuy" data-id="'+x.id+'" aria-label="Retirer de l\'historique">Supprimer</button></div>';
     return '<div class="line"><div class="grow"><b>'+esc(x.name)+'</b><small>'+d+' · +'+fmtQty(x.qty)+' à '+fmt(x.unit)+' · PMP '+fmtNum(x.oldCost)+' → '+fmt(x.newCost)+'</small></div><div class="num">'+fmt(x.total)+'</div>'+
       (latest[x.pid]===x?'<button class="btn danger sm" data-a="cancelbuy" data-id="'+x.id+'" aria-label="Annuler cette livraison">Annuler</button>':'')+'</div>';
   }).join('');
@@ -603,7 +603,8 @@ function vInventaire(){
     var d=new Date(v.t).toLocaleDateString('fr-FR',{day:'numeric',month:'long'});
     var gaps=v.lines.filter(function(l){return l.diff!==0});
     return '<div class="line" style="align-items:flex-start"><div class="grow"><b>'+d+'</b><small>'+v.lines.length+' produit(s) compté(s)'+(gaps.length?' · écarts : '+gaps.map(function(l){return esc(l.name)+' '+sgn(l.diff)}).join(', '):' · aucun écart')+'</small></div>'+
-      '<div class="num" style="color:'+(v.total<0?'var(--danger)':'var(--ok)')+'">'+(v.total===0?fmt(0):sgnm(v.total))+'</div></div>';
+      '<div class="num" style="color:'+(v.total<0?'var(--danger)':'var(--ok)')+'">'+(v.total===0?fmt(0):sgnm(v.total))+'</div>'+
+      '<button class="btn danger sm" data-a="delinv" data-id="'+v.id+'" aria-label="Supprimer cet inventaire">Supprimer</button></div>';
   }).join(''):'<p class="muted">Aucun inventaire validé.</p>')+'</div>';
   return h;
 }
@@ -916,6 +917,16 @@ var A={
     ['expenses','inventories','purchases','outbox','usedCodes'].forEach(function(k){if(!Array.isArray(n[k]))n[k]=[]});
     S=n;S.lastBackup=Date.now();pendingRestore=null;ensureMetals();tkReset();save();render();toast('Données restaurées');
   },
+  delinv:function(el){
+    if(!sureTap(el,'Sûr ?'))return;
+    S.inventories=S.inventories.filter(function(v){return v.id!==el.dataset.id});
+    save();render();toast('Inventaire supprimé (le stock ne change pas)');
+  },
+  delbuy:function(el){
+    if(!sureTap(el,'Sûr ?'))return;
+    S.purchases=S.purchases.filter(function(x){return !(x.id===el.dataset.id&&x.cancelled)});
+    save();render();toast('Retiré de l\'historique');
+  },
   cancelsale:function(el){
     if(!sureTap(el,'Sûr ?'))return;
     var i=-1;S.sales.forEach(function(x,k){if(x.id===el.dataset.id)i=k});if(i<0)return;
@@ -933,10 +944,9 @@ var A={
     var p=S.products.filter(function(x){return x.id===rec.pid})[0];
     var later=S.purchases.some(function(x){return !x.cancelled&&x.pid===rec.pid&&x.t>rec.t});
     if(later){toast('Annule d\'abord la livraison plus récente de ce produit');return}
-    if(!p){toast('Produit introuvable');return}
-    if(p.qty<rec.qty-1e-6){toast('Une partie est déjà vendue. Corrige la quantité dans Stock');return}
+    if(p&&p.qty<rec.qty-1e-6){toast('Une partie est déjà vendue. Corrige la quantité dans Stock');return}
     if(!sureTap(el,'Sûr ?'))return;
-    p.qty=Math.max(0,r6(p.qty-rec.qty));p.cost=rec.estimated?0:rec.oldCost;
+    if(p){p.qty=Math.max(0,r6(p.qty-rec.qty));p.cost=rec.estimated?0:rec.oldCost}
     rec.cancelled=true;rec.cancelledAt=Date.now();
     var oi=-1;S.outbox.forEach(function(o,k){if(o.table==='stock_deliveries'&&o.row.op_id===rec.id)oi=k});
     if(oi>=0)S.outbox.splice(oi,1);
