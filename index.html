@@ -271,6 +271,16 @@ function isoToday(){var d=new Date();return d.getFullYear()+'-'+('0'+(d.getMonth
 function dateFr(iso){var d=new Date(iso+'T12:00:00');return isNaN(d)?'':d.toLocaleDateString('fr-FR',{day:'numeric',month:'long',year:'numeric'})}
 
 var tab='caisse',cart={},cartU={},mode='cash',per='month',custName='';
+var tk=[],ti=0;
+function tkStash(){tk[ti]={cart:cart,cartU:cartU,mode:mode,name:custName};S.tickets=tk;S.ti=ti}
+function tkLoad(i){ti=i;var t=tk[i]||{};cart=t.cart||{};cartU=t.cartU||{};mode=t.mode||'cash';custName=t.name||''}
+function tkInit(){tk=(S.tickets&&S.tickets.length)?S.tickets:[{cart:{},cartU:{},mode:'cash',name:''}];tkLoad(Math.min(S.ti||0,tk.length-1))}
+function tkReset(){tk=[{cart:{},cartU:{},mode:'cash',name:''}];tkLoad(0);S.tickets=tk;S.ti=0}
+function endTicket(){
+  if(tk.length>1){tk.splice(ti,1);tkLoad(Math.min(ti,tk.length-1))}
+  else{cart={};cartU={};custName='';tk=[{cart:cart,cartU:cartU,mode:mode,name:''}];ti=0}
+  S.tickets=tk;S.ti=ti}
+tkInit();
 var ICONS={
   caisse:'<svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h2M12 11h2M16 11h0M8 15h2M12 15h2M16 15h0"/></svg>',
   produits:'<svg viewBox="0 0 24 24"><path d="M3 8l9-5 9 5-9 5-9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>',
@@ -302,7 +312,10 @@ function vCaisse(){
   h+='<div class="stats full"><div class="stat main"><span>Aujourd\'hui</span><strong>'+fmt(dayT)+'</strong></div>'+
      '<div class="stat"><span>Encaissé</span><strong>'+fmt(cashT)+'</strong></div>'+
      '<div class="stat"><span>Ce mois</span><strong>'+fmt(monthT)+'</strong></div></div>';
+  tkStash();
   h+='<div class="card"><h3>Nouvelle vente</h3>';
+  h+='<div class="useg" style="margin:0 0 12px">'+tk.map(function(t,i){var n=Object.keys(t.cart||{}).length;return '<button data-a="tkgo" data-i="'+i+'" class="'+(i===ti?'on':'')+'">'+esc((i===ti?custName:t.name)||('Client '+(i+1)))+(n?' · '+n:'')+'</button>'}).join('')+'<button data-a="tknew">+ Client</button></div>';
+  h+='<div class="field" style="margin-bottom:12px"><label for="cname">Client'+(mode==='credit'?' (obligatoire)':' (facultatif)')+'</label><input id="cname" list="clist" placeholder="Ex. Aminata Traoré" autocomplete="off" value="'+esc(custName)+'"><datalist id="clist">'+S.clients.map(function(c){return '<option value="'+esc(c.name)+'">'}).join('')+'</datalist></div>';
   if(!S.products.length){h+='<p class="muted">Ajoute d\'abord tes produits dans l\'onglet Stock.</p>'}
   else{
     h+='<div class="chips">'+S.products.map(function(p){
@@ -323,7 +336,6 @@ function vCaisse(){
     }).join('')+'</div>';
     h+='<div class="total"><span>Total</span><span class="num">'+fmt(total)+'</span></div>';
     h+='<div class="seg" style="margin-bottom:10px"><button data-a="mode" data-m="cash" class="'+(mode==='cash'?'on':'')+'">Payé</button><button data-a="mode" data-m="credit" class="'+(mode==='credit'?'on':'')+'">À crédit</button></div>';
-    h+='<div class="field"><label for="cname">Client'+(mode==='credit'?' (obligatoire)':' (facultatif)')+'</label><input id="cname" list="clist" placeholder="Ex. Aminata Traoré" autocomplete="off" value="'+esc(custName)+'"><datalist id="clist">'+S.clients.map(function(c){return '<option value="'+esc(c.name)+'">'}).join('')+'</datalist></div>';
     h+='<div class="row"><button class="btn block" data-a="validate" style="flex:1">Valider la vente</button><button class="btn ghost" data-a="clearcart">Vider</button></div>';
   }
   h+='</div>';
@@ -809,7 +821,9 @@ var A={
     var sub=lineU(p.id,p),q=1;if(toStock(p,q,sub)>p.qty+1e-6)q=r3(sub?p.qty*p.sub.n:p.qty);
     cart[p.id]=q;render();
   },
-  clearcart:function(){cart={};cartU={};custName='';render()},
+  clearcart:function(){endTicket();render()},
+  tknew:function(){tkStash();tk.push({cart:{},cartU:{},mode:'cash',name:''});tkLoad(tk.length-1);save();render()},
+  tkgo:function(el){tkStash();tkLoad(+el.dataset.i);save();render()},
   mode:function(el){mode=el.dataset.m;render()},
   per:function(el){per=el.dataset.p;render()},
   validate:function(){
@@ -831,7 +845,7 @@ var A={
       S.sales.push({id:uid(),t:now,pid:p.id,name:p.name,qty:q,unit:un,sq:sq,amount:amt,cost:p.cost||0,mode:mode,client:cl?cl.name:''});
     });
     if(cl&&mode==='credit'&&total>0)cl.entries.push({t:now,type:'debt',amount:total,note:labels.join(', ')});
-    cart={};cartU={};custName='';save();render();toast(mode==='credit'?'Crédit enregistré : '+fmt(total):'Vente enregistrée : '+fmt(total));
+    var wasC=mode==='credit';endTicket();save();render();toast(wasC?'Crédit enregistré : '+fmt(total):'Vente enregistrée : '+fmt(total));
   },
   addprod:function(){
     var name=$('#np-name').value.trim(),price=num($('#np-price').value);
@@ -900,7 +914,7 @@ var A={
     var keep={};KEEP_KEYS.forEach(function(k){keep[k]=S[k]});
     var n=Object.assign({},d,keep);delete n._zb;delete n._at;
     ['expenses','inventories','purchases','outbox','usedCodes'].forEach(function(k){if(!Array.isArray(n[k]))n[k]=[]});
-    S=n;S.lastBackup=Date.now();pendingRestore=null;ensureMetals();cart={};cartU={};custName='';save();render();toast('Données restaurées');
+    S=n;S.lastBackup=Date.now();pendingRestore=null;ensureMetals();tkReset();save();render();toast('Données restaurées');
   },
   cancelsale:function(el){
     if(!sureTap(el,'Sûr ?'))return;
@@ -975,16 +989,16 @@ var A={
   },
   wipe:function(el){
     if(el.dataset.sure!=='1'){el.dataset.sure='1';el.textContent='Sûr ? Tout sera effacé';return}
-    var country=S.country;S={sample:false,shop:'Ma boutique',country:country,base:'silver',products:[],sales:[],clients:[],cash:0,debts:0,expenses:[],inventories:[],purchases:[],outbox:[],sb:S.sb,shopId:S.shopId,installAt:S.installAt,paidUntil:S.paidUntil,usedCodes:S.usedCodes,lastSeen:S.lastSeen,lastBackup:S.lastBackup};
+    var country=S.country;S={sample:false,shop:'Ma boutique',country:country,base:'silver',products:[],sales:[],clients:[],cash:0,debts:0,expenses:[],inventories:[],purchases:[],outbox:[],sb:S.sb,shopId:S.shopId,installAt:S.installAt,paidUntil:S.paidUntil,usedCodes:S.usedCodes,lastSeen:S.lastSeen,lastBackup:S.lastBackup};tkReset();
     ensureMetals();cart={};save();render();toast('Données effacées');
   },
   clearsample:function(){
-    S.sample=false;S.products=[];S.sales=[];S.clients=[];S.expenses=[];S.inventories=[];S.purchases=[];S.outbox=[];S.cash=0;S.debts=0;S.shop='Ma boutique';cart={};save();render();toast('Exemples effacés');
+    S.sample=false;S.products=[];S.sales=[];S.clients=[];S.expenses=[];S.inventories=[];S.purchases=[];S.outbox=[];S.cash=0;S.debts=0;S.shop='Ma boutique';tkReset();save();render();toast('Exemples effacés');
   }
 };
 document.addEventListener('click',function(e){
   var el=e.target.closest('[data-a]');if(!el||!A[el.dataset.a])return;
-  var LK={cancelsale:1,cancelbuy:1,restoreok:1,validate:1,add:1,dec:1,addprod:1,delprod:1,restock:1,applyinv:1,adddebt:1,pay:1,addexp:1,delexp:1,clearsample:1,clearcart:1,mode:1};
+  var LK={cancelsale:1,cancelbuy:1,restoreok:1,validate:1,add:1,dec:1,addprod:1,delprod:1,restock:1,applyinv:1,adddebt:1,pay:1,addexp:1,delexp:1,clearsample:1,clearcart:1,mode:1,tknew:1,tkgo:1};
   if(LK[el.dataset.a]&&locked()){toast('Essai terminé : paie pour continuer');tab='pay';render();return}
   A[el.dataset.a](el);
 });
@@ -1024,7 +1038,7 @@ document.addEventListener('change',function(e){
 });
 document.addEventListener('input',function(e){
   var id=e.target.id||'';
-  if(id==='cname'){custName=e.target.value;return}
+  if(id==='cname'){custName=e.target.value;var tb=document.querySelector('[data-a=tkgo].on');if(tb){var nn=Object.keys(cart).length;tb.textContent=(custName||('Client '+(ti+1)))+(nn?' · '+nn:'')}tkStash();return}
   if(id==='rs-qty'||id==='rs-cost'){updRestockPreview();return}
   if(id.indexOf('ic-')===0){
     var pid=id.slice(3),pr=S.products.filter(function(x){return x.id===pid})[0],out=document.getElementById('ie-'+pid),cc=parseCount(e.target.value);
