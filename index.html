@@ -223,6 +223,7 @@ function seed(){
 if(!S||!S.products){S=seed()}
 if(!S.expenses)S.expenses=[];
 if(!S.inventories)S.inventories=[];
+if(!S.suppliers)S.suppliers=[];
 if(!S.country)S.country='ML';
 if(!S.base)S.base='silver';
 if(!S.purchases)S.purchases=[];if(!S.outbox)S.outbox=[];if(!S.sb)S.sb={url:'',key:''};if(!S.shopId)S.shopId=uuid();
@@ -266,6 +267,7 @@ var sameDay=function(t){return new Date(t).toDateString()===new Date().toDateStr
 var sameMonth=function(t){var a=new Date(t),b=new Date();return a.getMonth()===b.getMonth()&&a.getFullYear()===b.getFullYear()};
 var balance=function(c){return c.entries.reduce(function(a,e){return a+(e.type==='debt'?e.amount:-e.amount)},0)};
 var stockValue=function(){return S.products.reduce(function(a,p){return a+p.qty*(p.cost||p.price)},0)};
+var payables=function(){return (S.suppliers||[]).reduce(function(a,c){return a+Math.max(0,balance(c))},0)};
 var receivables=function(){return S.clients.reduce(function(a,c){return a+Math.max(0,balance(c))},0)};
 function isoToday(){var d=new Date();return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2)}
 function dateFr(iso){var d=new Date(iso+'T12:00:00');return isNaN(d)?'':d.toLocaleDateString('fr-FR',{day:'numeric',month:'long',year:'numeric'})}
@@ -484,7 +486,7 @@ function licActivateCard(){
 /* ---------- PMP : prix moyen pondéré, livraisons, Supabase ---------- */
 function uuid(){try{if(window.crypto&&crypto.randomUUID)return crypto.randomUUID()}catch(e){}
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,function(c){var r=Math.random()*16|0,v=c==='x'?r:(r&3|8);return v.toString(16)})}
-var rsProd=null,rsOp=uuid(),busy=false,lastSubmit=0,syncing=false,sbErr='';
+var credTab='cl',rsProd=null,rsOp=uuid(),busy=false,lastSubmit=0,syncing=false,sbErr='';
 function r4(n){return Math.round((Number(n)||0)*10000)/10000}
 /* Nouveau PMP = (valeur ancien stock + valeur livraison) / quantité totale */
 function calcPMP(oldQty,oldCost,addQty,unitPrice){
@@ -568,6 +570,8 @@ function restockCard(){
     '<div class="grid2"><div class="field"><label for="rs-qty">Quantité reçue</label><input id="rs-qty" inputmode="decimal" placeholder="10 ou 2,5"></div>'+
     '<div class="field"><label for="rs-cost">Prix d\'achat unitaire ('+CL()+')</label><input id="rs-cost" inputmode="decimal" placeholder="20000"></div></div>'+
     '<div id="rs-prev" style="margin-bottom:10px">'+restockPreview(rsProd,'','')+'</div>'+
+    '<div class="grid2"><div class="field"><label for="rs-sup">Fournisseur (facultatif)</label><input id="rs-sup" list="slist" autocomplete="off" placeholder="Ex. Grossiste Diarra"><datalist id="slist">'+(S.suppliers||[]).map(function(c){return '<option value="'+esc(c.name)+'">'}).join('')+'</datalist></div>'+
+    '<div class="field"><label for="rs-paid">Payé maintenant ('+CL()+')</label><input id="rs-paid" inputmode="decimal" placeholder="vide = tout payé"></div></div>'+
     '<button class="btn block" data-a="restock">Valider la livraison</button></div>';
 }
 function sbCard(){
@@ -638,9 +642,41 @@ function waLink(c,amt){
   return 'https://wa.me/'+d+'?text='+encodeURIComponent(msg);
 }
 function vCredits(){
+  return banner()+'<div class="seg" style="margin-bottom:12px"><button data-a="credtab" data-t="cl" class="'+(credTab==='cl'?'on':'')+'">Clients (on me doit)</button><button data-a="credtab" data-t="fo" class="'+(credTab==='fo'?'on':'')+'">Fournisseurs (je dois)</button></div>'+(credTab==='fo'?vSuppliers():vCreditsCl());
+}
+function findSup(name){var n=String(name||'').trim().toLowerCase();return (S.suppliers||[]).filter(function(c){return c.name.toLowerCase()===n})[0]}
+function vSuppliers(){
+  var list=S.suppliers.slice().sort(function(a,b){return balance(b)-balance(a)});
+  var tot=payables();
+  var h='<div class="stats full" style="grid-template-columns:1fr 1fr"><div class="stat main"><span>Je dois</span><strong>'+fmt(tot)+'</strong></div>'+
+     '<div class="stat"><span>Fournisseurs à payer</span><strong>'+list.filter(function(c){return balance(c)>0}).length+'</strong></div></div>';
+  h+='<div class="card"><h3>Noter une dette</h3><p class="muted small" style="margin:0 0 8px">Pour une livraison à crédit, remplis plutôt « Fournisseur » dans Inventaire > Nouvelle livraison.</p>'+
+    '<div class="field"><label for="sd-name">Nom du fournisseur</label><input id="sd-name" list="slist2" autocomplete="off" placeholder="Ex. Grossiste Diarra"><datalist id="slist2">'+S.suppliers.map(function(c){return '<option value="'+esc(c.name)+'">'}).join('')+'</datalist></div>'+
+    '<div class="grid2"><div class="field"><label for="sd-amount">Montant dû ('+CL()+')</label><input id="sd-amount" inputmode="decimal" placeholder="400000"></div>'+
+    '<div class="field"><label for="sd-phone">Téléphone (facultatif)</label><input id="sd-phone" inputmode="tel" placeholder="Numéro local"></div></div>'+
+    '<div class="field"><label for="sd-note">Pour quoi ?</label><input id="sd-note" placeholder="Ex. 100 cartons de savon"></div>'+
+    '<button class="btn block" data-a="addsup">Enregistrer</button></div>';
+  h+=list.map(function(c){
+    var b=balance(c),last=c.entries[c.entries.length-1];
+    var hist=c.entries.slice().reverse().slice(0,4).map(function(e){
+      var d=new Date(e.t).toLocaleDateString('fr-FR',{day:'numeric',month:'short'});
+      return '<div class="line small"><div class="grow">'+d+' · '+(e.type==='debt'?'dette':'payé')+(e.note?' · '+esc(e.note):'')+'</div><div class="num">'+(e.type==='debt'?'+':'−')+fmt(e.amount)+'</div></div>';
+    }).join('');
+    var tel=String(c.phone||'').replace(/[^0-9+]/g,'');
+    return '<div class="card"><div class="row" style="justify-content:space-between;align-items:flex-start"><div><b>'+esc(c.name)+'</b><div class="small muted">'+(c.phone?esc(c.phone):'sans numéro')+'</div></div>'+
+      (b>0?'<span class="pill due num">'+fmt(b)+'</span>':'<span class="pill ok">soldé</span>')+'</div>'+
+      '<div style="margin:8px 0">'+hist+'</div>'+
+      (b>0?'<div class="row"><input id="sp-'+c.id+'" inputmode="decimal" placeholder="Montant payé" style="flex:1 1 120px;width:auto"><button class="btn sm" data-a="paysup" data-id="'+c.id+'">Payer</button>'+(tel?'<a class="btn gold sm" href="tel:'+tel+'">Appeler</a>':'')+'</div>':'')+
+      (last&&last.type==='pay'?'<div style="margin-top:8px"><button class="btn ghost sm" data-a="undopay" data-id="'+c.id+'">Annuler le dernier paiement</button></div>':'')+
+      '</div>';
+  }).join('');
+  if(!list.length)h+='<div class="card"><p class="muted">Aucune dette fournisseur.</p></div>';
+  return h;
+}
+function vCreditsCl(){
   var list=S.clients.slice().sort(function(a,b){return balance(b)-balance(a)});
   var tot=receivables();
-  var h=banner();
+  var h='';
   h+='<div class="stats full" style="grid-template-columns:1fr 1fr"><div class="stat main"><span>On me doit</span><strong>'+fmt(tot)+'</strong></div>'+
      '<div class="stat"><span>Clients avec reste</span><strong>'+list.filter(function(c){return balance(c)>0}).length+'</strong></div></div>';
   h+='<div class="card"><h3>Noter un crédit</h3>'+
@@ -763,7 +799,8 @@ function vZakat(){
   return banner()+
   '<div class="full"><h2>Zakat commerciale</h2><p class="muted small" style="margin:0">Le stock et les crédits clients viennent des autres onglets. Remplis le reste.</p></div>'+
   '<div class="card"><h3>Ma situation</h3><div class="field"><label for="z-cash">Argent en caisse et en banque, Mobile Money inclus ('+CL()+')</label><input id="z-cash" inputmode="decimal" value="'+(S.cash||'')+'" placeholder="0"></div>'+
-  '<div class="field" style="margin:0"><label for="z-debts">Dettes à payer maintenant : fournisseurs, loyer, salaires ('+CL()+')</label><input id="z-debts" inputmode="decimal" value="'+(S.debts||'')+'" placeholder="0"></div></div>'+
+  '<div class="field" style="margin:0"><label for="z-debts">Dettes à payer maintenant : fournisseurs, loyer, salaires ('+CL()+')</label><input id="z-debts" inputmode="decimal" value="'+(S.debts||'')+'" placeholder="0">'+
+    (payables()>0?'<p class="muted small" style="margin:6px 0 0">Dettes fournisseurs notées dans l\'appli : <b>'+fmt(payables())+'</b> '+(num(S.debts)!==payables()?'<button class="btn ghost sm" data-a="usedebts" style="margin-left:6px">Utiliser ce montant</button>':'')+'</p>':'')+'</div></div>'+
   '<div class="card"><h3>Nisab : or et argent</h3>'+
   '<div class="seg" style="margin-bottom:10px" role="group" aria-label="Base du Nisab"><button data-a="base" data-b="silver" class="'+(S.base==='silver'?'on':'')+'">Argent (595 g)</button><button data-a="base" data-b="gold" class="'+(S.base==='gold'?'on':'')+'">Or (85 g)</button></div>'+
   '<div class="grid2"><div class="field"><label for="z-silver">Argent, prix du gramme ('+CL()+')</label><input id="z-silver" inputmode="decimal" value="'+S.silver+'"></div>'+
@@ -964,6 +1001,9 @@ var A={
     var q=qn($('#rs-qty').value),pr=num($('#rs-cost').value);
     if(!q){toast('Écris la quantité reçue');return}
     if(!pr){toast('Écris le prix d\'achat unitaire');return}
+    var supName=(($('#rs-sup')||{value:''}).value||'').trim(),paidRaw=(($('#rs-paid')||{value:''}).value||'').trim();
+    var totalDue=money(r4(q*pr)),paidNow=paidRaw===''?totalDue:Math.min(totalDue,Math.max(0,num(paidRaw))),due=money(totalDue-paidNow);
+    if(due>0&&!supName){toast('Écris le nom du fournisseur pour noter la dette');return}
     var now=Date.now();
     if(busy||now-lastSubmit<1200)return;
     busy=true;lastSubmit=now;
@@ -972,8 +1012,13 @@ var A={
       var r=receiveDelivery(sel.value,q,pr,rsOp,now);
       if(!r){toast('Livraison déjà enregistrée');return}
       rsOp=uuid();
+      if(supName){
+        var sup=findSup(supName);if(!sup){sup={id:uid(),name:supName,phone:'',entries:[]};S.suppliers.push(sup)}
+        r.rec.sup=supName;r.rec.due=due;
+        if(due>0)sup.entries.push({t:now,type:'debt',amount:due,note:r.rec.name+' ×'+fmtQty(q),did:r.rec.id});
+      }
       save();render();
-      toast('+'+q+' '+r.rec.name+' · PMP '+fmt(r.rec.newCost));
+      toast('+'+q+' '+r.rec.name+' · PMP '+fmt(r.rec.newCost)+(due>0?' · dette '+fmt(due):''));
       syncOutbox();
     }finally{busy=false}
   },
@@ -989,7 +1034,7 @@ var A={
     var d=pendingRestore;if(!validBackup(d)){pendingRestore=null;render();toast('Fichier invalide');return}
     var keep={};KEEP_KEYS.forEach(function(k){keep[k]=S[k]});
     var n=Object.assign({},d,keep);delete n._zb;delete n._at;
-    ['expenses','inventories','purchases','outbox','usedCodes'].forEach(function(k){if(!Array.isArray(n[k]))n[k]=[]});
+    ['expenses','inventories','purchases','outbox','usedCodes','suppliers'].forEach(function(k){if(!Array.isArray(n[k]))n[k]=[]});
     S=n;S.lastBackup=Date.now();pendingRestore=null;ensureMetals();tkReset();save();render();toast('Données restaurées');
   },
   delinv:function(el){
@@ -1023,6 +1068,7 @@ var A={
     if(!sureTap(el,'Sûr ?'))return;
     if(p){p.qty=Math.max(0,r6(p.qty-rec.qty));p.cost=rec.estimated?0:rec.oldCost}
     rec.cancelled=true;rec.cancelledAt=Date.now();
+    (S.suppliers||[]).forEach(function(c){c.entries=c.entries.filter(function(e){return e.did!==rec.id})});
     var oi=-1;S.outbox.forEach(function(o,k){if(o.table==='stock_deliveries'&&o.row.op_id===rec.id)oi=k});
     if(oi>=0)S.outbox.splice(oi,1);
     else S.outbox.push({table:'stock_delivery_cancellations',row:{op_id:uuid(),delivery_op_id:rec.id,shop_id:S.shopId,cancelled_at:new Date().toISOString()}});
@@ -1045,6 +1091,31 @@ var A={
     if(!sbConfigured()){toast('Remplis d\'abord l\'adresse et la clé');return}
     sbErr='';syncOutbox().then(function(){toast(S.outbox.length?'Pas encore envoyé : '+(sbErr||'réessaie'):'Tout est envoyé')});
   },
+  credtab:function(el){credTab=el.dataset.t==='fo'?'fo':'cl';render()},
+  addsup:function(){
+    var nm=$('#sd-name').value.trim(),amt=num($('#sd-amount').value);
+    if(!nm||!amt){toast('Nom et montant obligatoires');return}
+    var c=findSup(nm);
+    if(!c){c={id:uid(),name:nm,phone:'',entries:[]};S.suppliers.push(c)}
+    var ph=$('#sd-phone').value.trim();if(ph)c.phone=ph;
+    c.entries.push({t:Date.now(),type:'debt',amount:amt,note:$('#sd-note').value.trim()});
+    save();render();toast('Dette notée');
+  },
+  paysup:function(el){
+    var c=S.suppliers.filter(function(x){return x.id===el.dataset.id})[0];if(!c)return;
+    var amt=num($('#sp-'+c.id).value);
+    if(!amt){toast('Écris le montant payé');return}
+    var b=balance(c);if(amt>b)amt=b;
+    c.entries.push({t:Date.now(),type:'pay',amount:amt,note:'Paiement'});
+    save();render();toast(fmt(amt)+' payé à '+c.name);
+  },
+  undopay:function(el){
+    var c=S.suppliers.filter(function(x){return x.id===el.dataset.id})[0];if(!c)return;
+    var l=c.entries[c.entries.length-1];if(!l||l.type!=='pay')return;
+    if(!sureTap(el,'Sûr ?'))return;
+    c.entries.pop();save();render();toast('Paiement annulé');
+  },
+  usedebts:function(){S.debts=payables();save();render();toast('Dettes mises à jour : '+fmt(S.debts))},
   adddebt:function(){
     var nm=$('#nd-name').value.trim(),amt=num($('#nd-amount').value);
     if(!nm||!amt){toast('Nom et montant obligatoires');return}
@@ -1074,16 +1145,16 @@ var A={
   },
   wipe:function(el){
     if(el.dataset.sure!=='1'){el.dataset.sure='1';el.textContent='Sûr ? Tout sera effacé';return}
-    var country=S.country;S={sample:false,shop:'Ma boutique',country:country,base:'silver',products:[],sales:[],clients:[],cash:0,debts:0,expenses:[],inventories:[],purchases:[],outbox:[],sb:S.sb,shopId:S.shopId,installAt:S.installAt,paidUntil:S.paidUntil,usedCodes:S.usedCodes,lastSeen:S.lastSeen,lastBackup:S.lastBackup,ctl:S.ctl,lastPing:S.lastPing};tkReset();
+    var country=S.country;S={sample:false,shop:'Ma boutique',country:country,base:'silver',products:[],sales:[],clients:[],suppliers:[],cash:0,debts:0,expenses:[],inventories:[],purchases:[],outbox:[],sb:S.sb,shopId:S.shopId,installAt:S.installAt,paidUntil:S.paidUntil,usedCodes:S.usedCodes,lastSeen:S.lastSeen,lastBackup:S.lastBackup,ctl:S.ctl,lastPing:S.lastPing};tkReset();
     ensureMetals();cart={};save();render();toast('Données effacées');
   },
   clearsample:function(){
-    S.sample=false;S.products=[];S.sales=[];S.clients=[];S.expenses=[];S.inventories=[];S.purchases=[];S.outbox=[];S.cash=0;S.debts=0;S.shop='Ma boutique';tkReset();save();render();toast('Exemples effacés');
+    S.sample=false;S.products=[];S.sales=[];S.clients=[];S.suppliers=[];S.expenses=[];S.inventories=[];S.purchases=[];S.outbox=[];S.cash=0;S.debts=0;S.shop='Ma boutique';tkReset();save();render();toast('Exemples effacés');
   }
 };
 document.addEventListener('click',function(e){
   var el=e.target.closest('[data-a]');if(!el||!A[el.dataset.a])return;
-  var LK={cancelsale:1,cancelbuy:1,restoreok:1,validate:1,add:1,dec:1,addprod:1,delprod:1,restock:1,applyinv:1,adddebt:1,pay:1,addexp:1,delexp:1,clearsample:1,clearcart:1,mode:1,tknew:1,tkgo:1};
+  var LK={cancelsale:1,cancelbuy:1,restoreok:1,validate:1,add:1,dec:1,addprod:1,delprod:1,restock:1,applyinv:1,adddebt:1,pay:1,addexp:1,delexp:1,clearsample:1,clearcart:1,mode:1,tknew:1,tkgo:1,addsup:1,paysup:1,undopay:1};
   if(LK[el.dataset.a]&&locked()){toast('Essai terminé : paie pour continuer');tab='pay';render();return}
   A[el.dataset.a](el);
 });
