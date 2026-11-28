@@ -397,7 +397,7 @@ function licFmt(c){return c.replace(/(.{4})(?=.)/g,'$1-')}
 
 /* ---------- SAUVEGARDE / RESTAURATION + ANNULATIONS ---------- */
 var pendingRestore=null;
-var KEEP_KEYS=['shopId','installAt','paidUntil','usedCodes','lastSeen','outbox','sb','lastBackup'];
+var KEEP_KEYS=['shopId','installAt','paidUntil','usedCodes','lastSeen','outbox','sb','lastBackup','ctl','lastPing','tickets','ti'];
 function backupData(){var o={};Object.keys(S).forEach(function(k){if(KEEP_KEYS.indexOf(k)<0)o[k]=S[k]});o._zb=1;o._at=Date.now();return o}
 function validBackup(d){
   if(!d||d._zb!==1||!Array.isArray(d.products)||!Array.isArray(d.sales)||!Array.isArray(d.clients))return false;
@@ -434,14 +434,34 @@ function sureTap(el,label){
 var TRIAL_DAYS=14,PRICE_GROS='25 000 FCFA',PRICE_PETIT='2 500 FCFA',DAY=864e5;
 function licId(){return String(S.shopId||'').replace(/-/g,'').slice(0,8).toUpperCase()}
 function licIdShow(){var i=licId();return i.slice(0,4)+'-'+i.slice(4)}
+var CTRL_URL='https://sizeqoytyiblnzpjvfnm.supabase.co',CTRL_KEY='sb_publishable_Y7G79T212gMDb0PKn2MMMg_aqm8r1fr',PING_MAX_DAYS=30,CONTACT='72455530';
 function licInfo(){
   var now=Math.max(Date.now(),S.lastSeen||0);S.lastSeen=now;
   var trialEnd=(S.installAt||now)+TRIAL_DAYS*DAY,paid=S.paidUntil||0,end=Math.max(trialEnd,paid);
-  return {now:now,end:end,active:now<end,paid:paid>now,days:Math.max(0,Math.ceil((end-now)/DAY))};
+  var blk=!!(S.ctl&&S.ctl.blocked),stale=now-Math.max(S.lastPing||0,S.installAt||now)>PING_MAX_DAYS*DAY;
+  return {now:now,end:end,active:now<end&&!blk&&!stale,expired:now>=end,blocked:blk,stale:stale,paid:paid>now,days:Math.max(0,Math.ceil((end-now)/DAY))};
+}
+function ctlCall(name,body,ms){
+  var c=new AbortController(),to=setTimeout(function(){c.abort()},ms||12000);
+  return fetch(CTRL_URL+'/rest/v1/rpc/'+name,{method:'POST',headers:{'apikey':CTRL_KEY,'Authorization':'Bearer '+CTRL_KEY,'Content-Type':'application/json'},body:JSON.stringify(body),signal:c.signal})
+   .then(function(r){clearTimeout(to);return r.text().then(function(t){var j=null;try{j=JSON.parse(t)}catch(e){}if(!r.ok)throw {status:r.status,body:j};return j})});
+}
+function ctlPing(){
+  if(typeof navigator!=='undefined'&&navigator.onLine===false)return;
+  var before=licInfo().active,bp=S.paidUntil||0;
+  ctlCall('zb_ping',{p_id:String(S.shopId||''),p_name:S.shop||'',p_country:S.country||''}).then(function(j){
+    if(!j||!j.ok)return;
+    S.ctl={blocked:!!j.blocked,at:Date.now()};S.lastPing=Date.now();
+    if(Number(j.paid_until)>(S.paidUntil||0))S.paidUntil=Number(j.paid_until);
+    save();
+    if(before!==licInfo().active||bp!==(S.paidUntil||0))render();
+  }).catch(function(){});
 }
 function locked(){return !licInfo().active}
 function licBanner(){
   var i=licInfo();
+  if(i.blocked)return '<div class="banner full"><span>Accès suspendu. Contacte-nous au '+CONTACT+'. Tes données sont gardées.</span></div>';
+  if(i.stale&&!i.expired)return '<div class="banner full"><span>Connecte-toi à internet pour vérifier ton abonnement. Tes données sont gardées.</span></div>';
   if(!i.active)return '<div class="banner full"><span>Essai terminé. Paie ton abonnement pour continuer à vendre. Tes données sont gardées.</span><button class="btn gold sm" data-a="tab" data-t="pay">Payer</button></div>';
   if(i.days<=3)return '<div class="banner full"><span>'+(i.paid?'Ton abonnement se termine':'Ton essai se termine')+' dans '+i.days+' jour'+(i.days>1?'s':'')+'.</span><button class="btn gold sm" data-a="tab" data-t="pay">Payer</button></div>';
   return '';
@@ -453,7 +473,8 @@ function licCard(){
     '<div class="calc" style="margin:4px 0 8px"><span><b>Grossiste</b> (gros stock)</span><span class="r"><b>'+PRICE_GROS+' / mois</b></span>'+
     '<span><b>Petit commerce</b></span><span class="r"><b>'+PRICE_PETIT+' / mois</b></span></div>'+
     '<p class="muted small" style="margin:0 0 6px">12 mois payés = 2 mois offerts. Prix en FCFA, ou l\'équivalent dans ta monnaie.</p>'+
-    '<p class="muted small" style="margin:0">Ton ID boutique : <b>'+licIdShow()+'</b> (donne-le quand tu paies)</p></div>';
+    '<p class="muted small" style="margin:0 0 6px">Ton ID boutique : <b>'+licIdShow()+'</b> (donne-le quand tu paies)</p>'+
+    '<p class="muted small" style="margin:0">L\'appli se connecte de temps en temps à internet pour vérifier ton abonnement. Seuls le nom de ta boutique et ton ID sont envoyés, jamais tes ventes.</p></div>';
 }
 function licActivateCard(){
   return '<div class="card"><h3>J\'ai reçu mon code</h3><div class="field"><label for="lic-code">Code d\'activation</label><input id="lic-code" autocapitalize="characters" autocomplete="off" placeholder="XXXX-XXXX-XXXX"></div>'+
@@ -772,6 +793,48 @@ function vPay(){
 }
 
 /* ---------- RÉGLAGES ---------- */
+var adm={list:null,err:'',busy:false,q:''};
+function admShort(id){return String(id||'').replace(/-/g,'').slice(0,8).toUpperCase().replace(/^(.{4})/,'$1-')}
+function admStatus(x){
+  var now=Date.now(),pu=Number(x.paid_until)||0,tr=new Date(x.created_at).getTime()+TRIAL_DAYS*DAY;
+  if(x.blocked)return '<b style="color:var(--danger)">Bloqué</b>';
+  if(pu>now)return '<b style="color:var(--ok)">Abonné jusqu\'au '+new Date(pu).toLocaleDateString('fr-FR')+'</b>';
+  if(tr>now)return '<b>Essai jusqu\'au '+new Date(tr).toLocaleDateString('fr-FR')+'</b>';
+  return '<b style="color:var(--danger)">Essai terminé</b>';
+}
+function admAgo(t){var d=Math.floor((Date.now()-new Date(t).getTime())/DAY);return d<=0?'aujourd\'hui':'il y a '+d+' j'}
+function admRows(){
+  var q=(adm.q||'').toLowerCase();
+  var rows=(adm.list||[]).filter(function(x){return !q||String(x.name||'').toLowerCase().indexOf(q)>=0||admShort(x.shop_id).toLowerCase().indexOf(q)>=0});
+  if(!rows.length)return '<p class="muted">Aucun utilisateur.</p>';
+  return rows.map(function(x){
+    return '<div class="card" style="margin:8px 0"><div class="row" style="justify-content:space-between"><b>'+esc(x.name||'(sans nom)')+'</b><span class="muted small">'+admShort(x.shop_id)+'</span></div>'+
+      '<p class="muted small" style="margin:2px 0 6px">'+esc(x.country||'')+' · vu '+admAgo(x.last_seen)+' · inscrit le '+new Date(x.created_at).toLocaleDateString('fr-FR')+'</p>'+
+      '<p style="margin:0 0 8px">'+admStatus(x)+'</p>'+
+      '<div class="useg" style="margin:0"><button data-a="admblock" data-id="'+esc(x.shop_id)+'" data-b="'+(x.blocked?'0':'1')+'" style="'+(x.blocked?'':'color:var(--danger)')+'">'+(x.blocked?'Débloquer':'Bloquer')+'</button><button data-a="admpay" data-id="'+esc(x.shop_id)+'" data-m="1">+1 mois</button><button data-a="admpay" data-id="'+esc(x.shop_id)+'" data-m="12">+12 mois</button></div></div>';
+  }).join('');
+}
+function vProprio(){
+  var h='<div class="card"><h3>Espace propriétaire</h3>';
+  if(!adm.list){
+    h+='<div class="field"><label for="adm-pw">Mot de passe</label><input id="adm-pw" type="password" autocomplete="off" autocapitalize="characters"></div>'+
+       (adm.err?'<p style="color:var(--danger);margin:0 0 8px">'+esc(adm.err)+'</p>':'')+
+       '<div class="row"><button class="btn block" data-a="admlogin" style="flex:1">'+(adm.busy?'Connexion…':'Ouvrir')+'</button><button class="btn ghost" data-a="admclose">Fermer</button></div></div>';
+    return h;
+  }
+  var n=adm.list.length,bl=adm.list.filter(function(x){return x.blocked}).length;
+  h+='<p class="muted small" style="margin:0 0 8px">'+n+' utilisateur'+(n>1?'s':'')+' · '+bl+' bloqué'+(bl>1?'s':'')+'</p>'+
+     (adm.err?'<p style="color:var(--danger);margin:0 0 8px">'+esc(adm.err)+'</p>':'')+
+     '<div class="field"><input id="adm-q" placeholder="Chercher un nom ou un ID" value="'+esc(adm.q)+'"></div>'+
+     '<div class="row"><button class="btn ghost sm" data-a="admrefresh">Actualiser</button><button class="btn ghost sm" data-a="admclose">Fermer</button></div></div>'+
+     '<div id="adm-list">'+admRows()+'</div>';
+  return h;
+}
+function admErr(e){return e&&e.status===400?'Mot de passe incorrect.':'Pas de connexion à internet.'}
+function admLoad(pw,done){
+  adm.busy=true;adm.err='';
+  ctlCall('zb_admin_list',{p_pw:pw}).then(function(j){adm.pw=pw;adm.list=Array.isArray(j)?j:[];adm.busy=false;render()}).catch(function(e){adm.busy=false;adm.err=admErr(e);if(adm.list&&e&&e.status===400)adm.list=null;render()});
+}
 function vReglages(){
   var c=ctry();
   return '<div class="full"><h2>Réglages</h2></div>'+
@@ -785,9 +848,9 @@ function vReglages(){
   '<button class="btn danger sm" data-a="wipe">Effacer toutes mes données</button></div>';
 }
 
-var VIEWS={caisse:vCaisse,produits:vProduits,inventaire:vInventaire,credits:vCredits,compta:vCompta,zakat:vZakat,pay:vPay,reglages:vReglages};
+var VIEWS={caisse:vCaisse,produits:vProduits,inventaire:vInventaire,credits:vCredits,compta:vCompta,zakat:vZakat,pay:vPay,reglages:vReglages,proprio:vProprio};
 function render(){
-  $('#view').innerHTML=(tab==='pay'||tab==='reglages'?'':licBanner())+(tab==='caisse'?backupBanner():'')+VIEWS[tab]();
+  $('#view').innerHTML=(tab==='pay'||tab==='reglages'||tab==='proprio'?'':licBanner())+(tab==='caisse'?backupBanner():'')+VIEWS[tab]();
   $('#tabs').innerHTML=Object.keys(NAMES).map(function(k){
     return '<button class="tab'+(k===tab?' on':'')+'" data-a="tab" data-t="'+k+'"'+(k===tab?' aria-current="page"':'')+'>'+ICONS[k]+NAMES[k]+'</button>';
   }).join('');
@@ -803,6 +866,18 @@ function findClient(name){
 }
 var A={
   tab:function(el){tab=el.dataset.t;render();window.scrollTo(0,0)},
+  admlogin:function(){var pw=($('#adm-pw')||{value:''}).value.trim();if(!pw){adm.err='Écris le mot de passe.';render();return}if(adm.busy)return;admLoad(pw);render()},
+  admrefresh:function(){if(adm.pw)admLoad(adm.pw)},
+  admclose:function(){adm.list=null;adm.pw='';adm.err='';adm.q='';tab='caisse';render()},
+  admblock:function(el){
+    var b=el.dataset.b==='1';if(b&&!sureTap(el,'Sûr ?'))return;
+    ctlCall('zb_admin_set',{p_pw:adm.pw,p_id:el.dataset.id,p_blocked:b}).then(function(){toast(b?'Utilisateur bloqué':'Utilisateur débloqué');admLoad(adm.pw)}).catch(function(e){toast(admErr(e))});
+  },
+  admpay:function(el){
+    var x=(adm.list||[]).filter(function(r){return r.shop_id===el.dataset.id})[0];if(!x)return;
+    var m=+el.dataset.m,base=Math.max(Number(x.paid_until)||0,Date.now());
+    ctlCall('zb_admin_set',{p_pw:adm.pw,p_id:x.shop_id,p_blocked:!!x.blocked,p_paid:Math.round(base+m*30*DAY)}).then(function(){toast('+'+m+' mois ajouté'+(m>1?'s':''));admLoad(adm.pw)}).catch(function(e){toast(admErr(e))});
+  },
   add:function(el){
     var p=S.products.filter(function(x){return x.id===el.dataset.id})[0];if(!p)return;
     var q=r3((cart[p.id]||0)+1);
@@ -999,7 +1074,7 @@ var A={
   },
   wipe:function(el){
     if(el.dataset.sure!=='1'){el.dataset.sure='1';el.textContent='Sûr ? Tout sera effacé';return}
-    var country=S.country;S={sample:false,shop:'Ma boutique',country:country,base:'silver',products:[],sales:[],clients:[],cash:0,debts:0,expenses:[],inventories:[],purchases:[],outbox:[],sb:S.sb,shopId:S.shopId,installAt:S.installAt,paidUntil:S.paidUntil,usedCodes:S.usedCodes,lastSeen:S.lastSeen,lastBackup:S.lastBackup};tkReset();
+    var country=S.country;S={sample:false,shop:'Ma boutique',country:country,base:'silver',products:[],sales:[],clients:[],cash:0,debts:0,expenses:[],inventories:[],purchases:[],outbox:[],sb:S.sb,shopId:S.shopId,installAt:S.installAt,paidUntil:S.paidUntil,usedCodes:S.usedCodes,lastSeen:S.lastSeen,lastBackup:S.lastBackup,ctl:S.ctl,lastPing:S.lastPing};tkReset();
     ensureMetals();cart={};save();render();toast('Données effacées');
   },
   clearsample:function(){
@@ -1048,6 +1123,7 @@ document.addEventListener('change',function(e){
 });
 document.addEventListener('input',function(e){
   var id=e.target.id||'';
+  if(id==='adm-q'){adm.q=e.target.value;var al=$('#adm-list');if(al)al.innerHTML=admRows();return}
   if(id==='cname'){custName=e.target.value;var tb=document.querySelector('[data-a=tkgo].on');if(tb){var nn=Object.keys(cart).length;tb.textContent=(custName||('Client '+(ti+1)))+(nn?' · '+nn:'')}tkStash();return}
   if(id==='rs-qty'||id==='rs-cost'){updRestockPreview();return}
   if(id.indexOf('ic-')===0){
@@ -1070,7 +1146,13 @@ document.addEventListener('input',function(e){
   }
 });
 render();
-window.addEventListener('online',syncOutbox);
+window.addEventListener('online',function(){syncOutbox();ctlPing()});
+setTimeout(ctlPing,2500);setInterval(ctlPing,6*3600*1000);
+(function(){var n=0,t=0;document.addEventListener('click',function(e){
+  if(!e.target.closest||!e.target.closest('.brand'))return;
+  var now=Date.now();n=(now-t<1500)?n+1:1;t=now;
+  if(n>=5){n=0;tab='proprio';render();window.scrollTo(0,0)}
+});})();
 setInterval(syncOutbox,60000);setTimeout(syncOutbox,1500);
 window.ZB={licInfo:licInfo,calcPMP:calcPMP,receiveDelivery:receiveDelivery,syncOutbox:syncOutbox,version:2};
 })();
