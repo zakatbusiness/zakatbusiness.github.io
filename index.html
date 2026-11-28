@@ -73,6 +73,9 @@ h3{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--mute
 .line small{display:block;color:var(--muted)}
 .num{font-variant-numeric:tabular-nums;white-space:nowrap}
 .qty{display:flex;align-items:center;gap:6px}
+.sgrp{border:1px solid var(--line);border-left:4px solid var(--gold);border-radius:12px;padding:6px 12px 2px;margin:12px 0;background:rgba(255,255,255,.02)}
+.sgh{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;padding:4px 0 6px;border-bottom:1px solid var(--line)}
+.sgh small{display:block;color:var(--muted);font-size:12px}
 .useg{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 .useg button{padding:5px 12px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--fg);font:inherit;font-size:13px;cursor:pointer}
 .useg button.on{background:var(--ok);color:#fff;border-color:var(--ok)}
@@ -371,9 +374,14 @@ function vCaisse(){
   }
   h+='</div>';
   h+=rcCard();
-  h+='<div class="card"><h3>Ventes du jour</h3>'+(ts.length?ts.slice().reverse().slice(0,10).map(function(s){
-    var d=new Date(s.t);var hh=('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2);
-    return '<div class="line"><div class="grow">'+esc(s.name)+' ×'+fmtQty(s.qty)+(s.unit&&s.unit!=='pièce'?' '+esc(s.unit):'')+'<small>'+hh+(s.mode==='credit'?' · crédit '+esc(s.client):' · payé'+(s.client?' · '+esc(s.client):''))+'</small></div><div class="num">'+fmt(s.amount)+'</div><button class="btn danger sm" data-a="cancelsale" data-id="'+s.id+'" aria-label="Annuler cette vente">Annuler</button></div>';
+  var groups=[],gi={};
+  ts.slice().reverse().forEach(function(x){var k=x.t+'|'+(x.client||'');if(gi[k]==null){gi[k]=groups.length;groups.push({t:x.t,client:x.client||'',mode:x.mode,items:[],total:0})}var g=groups[gi[k]];g.items.push(x);g.total+=x.amount});
+  h+='<div class="card"><h3>Ventes du jour</h3>'+(groups.length?groups.slice(0,8).map(function(g){
+    var d=new Date(g.t),hh=('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2);
+    return '<div class="sgrp"><div class="sgh"><div><b>'+esc(g.client||'Sans nom')+'</b><small>'+hh+(g.mode==='credit'?' · à crédit':' · payé')+'</small></div><div class="num">'+fmt(g.total)+'</div></div>'+
+      g.items.map(function(s){
+        return '<div class="line"><div class="grow">'+esc(s.name)+' ×'+fmtQty(s.qty)+(s.unit&&s.unit!=='pièce'?' '+esc(s.unit):'')+'</div><div class="num">'+fmt(s.amount)+'</div><button class="btn danger sm" data-a="cancelsale" data-id="'+s.id+'" aria-label="Annuler cette ligne">Annuler</button></div>';
+      }).join('')+'</div>';
   }).join(''):'<p class="muted">Aucune vente pour l\'instant.</p>')+'</div>';
   return h;
 }
